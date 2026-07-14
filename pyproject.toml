@@ -1,0 +1,20 @@
+[project]
+name = "aether-mcp-server"
+version = "0.1.0"
+description = "A demonstration MCP server with stdio and Streamable HTTP transports."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.0.0"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+aether-mcp-server = "aether_mcp_server.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
