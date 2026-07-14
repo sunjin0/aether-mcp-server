@@ -4,11 +4,11 @@ from aether_mcp_server.tools import current_time, echo
 
 
 def test_echo_returns_the_supplied_message() -> None:
-    assert echo("Hello MCP") == "Hello MCP"
+    assert echo("Hello MCP").message == "Hello MCP"
 
 
 def test_current_time_returns_a_utc_iso_timestamp() -> None:
-    value = current_time()
+    value = current_time().timestamp
     parsed = datetime.fromisoformat(value)
 
     assert parsed.tzinfo is not None

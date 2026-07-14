@@ -1,5 +1,7 @@
 import sys
 
+import pytest
+
 import aether_mcp_server.__main__ as cli
 
 
@@ -15,6 +17,12 @@ def test_http_cli_accepts_host_and_port() -> None:
     assert args.transport == "http"
     assert args.host == "0.0.0.0"
     assert args.port == 9000
+
+
+def test_http_cli_defaults_to_disabled_authentication() -> None:
+    args = cli.build_parser().parse_args(["http"])
+
+    assert args.auth is False
 
 
 def test_main_defaults_to_stdio_dispatch(monkeypatch) -> None:
@@ -38,6 +46,7 @@ def test_main_http_configures_server_then_dispatches(monkeypatch) -> None:
         calls.append((args, kwargs))
 
     monkeypatch.setattr(sys, "argv", ["aether-mcp-server", "http", "--host", "0.0.0.0", "--port", "9000"])
+    monkeypatch.setattr(cli, "create_server", lambda verifier, host, port: cli.mcp)
     monkeypatch.setattr(cli.mcp, "run", run)
     monkeypatch.setattr(cli.mcp.settings, "host", cli.mcp.settings.host)
     monkeypatch.setattr(cli.mcp.settings, "port", cli.mcp.settings.port)
@@ -47,3 +56,13 @@ def test_main_http_configures_server_then_dispatches(monkeypatch) -> None:
     assert cli.mcp.settings.host == "0.0.0.0"
     assert cli.mcp.settings.port == 9000
     assert calls == [((), {"transport": "streamable-http"})]
+
+
+def test_http_mode_rejects_missing_tokens_when_authentication_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AETHER_MCP_TOKENS", raising=False)
+    monkeypatch.setattr(sys, "argv", ["aether-mcp-server", "http", "--auth"])
+
+    with pytest.raises(ValueError, match="AETHER_MCP_TOKENS"):
+        cli.main()
