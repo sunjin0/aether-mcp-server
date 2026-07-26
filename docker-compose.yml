@@ -1,0 +1,15 @@
+services:
+  aether-mcp:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - HF_ENDPOINT=https://hf-mirror.com
+      - AETHER_MCP_TOKENS=${AETHER_MCP_TOKENS:-}
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - docling_cache:/root/.cache/docling
+
+volumes:
+  huggingface_cache:
+  docling_cache:
