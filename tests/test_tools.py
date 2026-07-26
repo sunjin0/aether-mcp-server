@@ -2,6 +2,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from docling.datamodel.base_models import InputFormat
+
 from aether_mcp_server.tools import (
     DocumentProcessingResult,
     _is_internal_url,
@@ -24,6 +26,15 @@ def test_current_time_returns_a_utc_iso_timestamp() -> None:
 
 
 class TestProcessDocument:
+    def test_configures_image_pipeline(self) -> None:
+        with patch("aether_mcp_server.tools.DocumentConverter") as mock_cls:
+            mock_cls.return_value.convert.return_value.document.export_to_markdown.return_value = "# Title"
+            mock_cls.return_value.convert.return_value.document.pages = [MagicMock()]
+            process_document(source="image.png", ocr=True)
+
+        format_options = mock_cls.call_args.kwargs["format_options"]
+        assert InputFormat.IMAGE in format_options
+
     def test_identifies_internal_addresses(self) -> None:
         assert _is_internal_url("http://10.0.0.1/report.pdf")
         assert _is_internal_url("http://127.0.0.1/report.pdf")

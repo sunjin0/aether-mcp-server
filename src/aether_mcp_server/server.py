@@ -1,5 +1,6 @@
 import functools
 import json
+import logging
 import tempfile
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from .auth import StaticTokenVerifier
 from .prompts import greet
 from .resources import welcome
 from .tools import current_time, echo, process_document
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessDocumentRequest(BaseModel):
@@ -61,6 +64,37 @@ def create_server(
         description="从 URL 下载文档并使用 Docling 进行格式转换与分析（支持 PDF/DOCX/PPTX 等格式）。",
     )(process_document)
 
+    @server.custom_route("/api/process-document", methods=["POST"])
+    async def process_document_http(request: Request) -> JSONResponse:
+        """通过 REST API 处理 URL 文档。"""
+        if token_verifier is not None:
+            authorization = request.headers.get("authorization", "")
+            scheme, _, token = authorization.partition(" ")
+            if (
+                scheme.lower() != "bearer"
+                or not token
+                or await token_verifier.verify_token(token) is None
+            ):
+                return JSONResponse({"detail": "未授权"}, status_code=401)
+
+        try:
+            arguments = ProcessDocumentRequest.model_validate(await request.json())
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as error:
+            return JSONResponse(
+                {"detail": "请求参数无效", "errors": str(error)},
+                status_code=422,
+            )
+
+        try:
+            result = await anyio.to_thread.run_sync(
+                functools.partial(process_document, **arguments.model_dump())
+            )
+        except Exception:
+            logger.exception("URL 文档处理失败")
+            return JSONResponse({"detail": "文档处理失败"}, status_code=500)
+
+        return JSONResponse(result.model_dump(mode="json"))
+
     @server.custom_route("/api/convert-file", methods=["POST"])
     async def convert_file_http(request: Request) -> JSONResponse:
         """接受文件上传，处理后返回转换结果。"""
@@ -96,6 +130,7 @@ def create_server(
                 )
             )
         except Exception:
+            logger.exception("上传文档处理失败")
             return JSONResponse({"detail": "文档处理失败"}, status_code=500)
         finally:
             tmp_path.unlink(missing_ok=True)

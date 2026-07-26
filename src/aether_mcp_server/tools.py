@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.document_converter import (
+    DocumentConverter,
+    ImageFormatOption,
+    PdfFormatOption,
+)
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from pydantic import BaseModel, Field
@@ -113,7 +117,9 @@ def process_document(
             do_table_structure=extract_tables,
         )
         format_options = {
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        # 图片与 PDF 共用标准版面和 OCR 管线，确保 ocr 参数对图片也生效。
+        InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
         }
         converter = DocumentConverter(format_options=format_options)
         logger.info("DocumentConverter created, starting convert...")
