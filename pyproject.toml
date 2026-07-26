@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A demonstration MCP server with stdio and Streamable HTTP transports."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.0.0"]
+dependencies = ["mcp>=1.0.0", "docling>=2.0.0"]
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]

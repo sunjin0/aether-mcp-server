@@ -8,13 +8,13 @@ import aether_mcp_server.__main__ as cli
 def test_cli_defaults_to_stdio() -> None:
     args = cli.build_parser().parse_args([])
 
-    assert args.transport == "stdio"
+    assert args.command == "stdio"
 
 
 def test_http_cli_accepts_host_and_port() -> None:
     args = cli.build_parser().parse_args(["http", "--host", "0.0.0.0", "--port", "9000"])
 
-    assert args.transport == "http"
+    assert args.command == "http"
     assert args.host == "0.0.0.0"
     assert args.port == 9000
 
