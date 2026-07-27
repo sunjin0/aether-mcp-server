@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - HF_ENDPOINT=https://hf-mirror.com
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
       - AETHER_MCP_TOKENS=${AETHER_MCP_TOKENS:-}
     volumes:
       - huggingface_cache:/root/.cache/huggingface

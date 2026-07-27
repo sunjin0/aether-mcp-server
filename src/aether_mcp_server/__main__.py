@@ -2,9 +2,9 @@ import argparse
 import os
 import sys
 
-# HuggingFace 国内镜像加速（用户可通过环境变量覆盖）
+# 默认使用 Hugging Face 官方服务；网络环境需要镜像时可通过环境变量覆盖。
 if "HF_ENDPOINT" not in os.environ:
-    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+    os.environ["HF_ENDPOINT"] = "https://huggingface.co"
 
 # Windows 无 symlink 支持时静默
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
