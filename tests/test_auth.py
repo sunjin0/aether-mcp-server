@@ -1,41 +1,69 @@
 import pytest
+import jwt
+from datetime import UTC, datetime, timedelta
 from starlette.testclient import TestClient
 
-from aether_mcp_server.auth import StaticTokenVerifier, load_tokens
+from aether_mcp_server.auth import JavaDelegationVerifier, load_delegation_secret
 from aether_mcp_server.server import create_server
 from aether_mcp_server.tools import DocumentProcessingResult
 
 
-def test_load_tokens_trims_values_and_ignores_empty_entries(
+DELEGATION_SECRET = "delegation-secret-for-unit-tests-000"
+
+
+def test_load_delegation_secret_returns_configured_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AETHER_MCP_TOKENS", " token-a, ,token-b ")
+    monkeypatch.setenv("AETHER_MCP_DELEGATION_SECRET", " " + DELEGATION_SECRET + " ")
 
-    assert load_tokens() == frozenset({"token-a", "token-b"})
+    assert load_delegation_secret() == DELEGATION_SECRET
 
 
-def test_load_tokens_rejects_missing_configuration(
+def test_load_delegation_secret_returns_none_when_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("AETHER_MCP_TOKENS", raising=False)
+    monkeypatch.delenv("AETHER_MCP_DELEGATION_SECRET", raising=False)
 
-    with pytest.raises(ValueError, match="AETHER_MCP_TOKENS"):
-        load_tokens()
+    assert load_delegation_secret() is None
 
 
 @pytest.mark.anyio
-async def test_verifier_returns_access_token_only_for_configured_token() -> None:
-    verifier = StaticTokenVerifier(frozenset({"token-a"}))
+async def test_verifier_rejects_non_java_tokens() -> None:
+    verifier = JavaDelegationVerifier(DELEGATION_SECRET)
 
-    access_token = await verifier.verify_token("token-a")
-
-    assert access_token is not None
-    assert access_token.token == "token-a"
+    assert await verifier.verify_token("token-a") is None
     assert await verifier.verify_token("wrong-token") is None
 
 
+@pytest.mark.anyio
+async def test_verifier_accepts_only_valid_delegated_tool_scopes() -> None:
+    verifier = JavaDelegationVerifier(DELEGATION_SECRET)
+    token = jwt.encode(
+        {
+            "runId": "run-1", "userId": "user-1", "agentId": "agent-1",
+            "allowedTools": ["get_current_time"],
+            "exp": datetime.now(UTC) + timedelta(minutes=1),
+        },
+        DELEGATION_SECRET,
+        algorithm="HS256",
+    )
+    access_token = await verifier.verify_token(token)
+    assert access_token is not None
+    assert access_token.scopes == ["get_current_time"]
+
+
+@pytest.mark.anyio
+async def test_verifier_rejects_expired_or_malformed_delegation_token() -> None:
+    verifier = JavaDelegationVerifier(DELEGATION_SECRET)
+    expired = jwt.encode(
+        {"runId": "run-1", "userId": "user-1", "agentId": "agent-1", "allowedTools": [], "exp": datetime.now(UTC) - timedelta(minutes=1)},
+        DELEGATION_SECRET, algorithm="HS256",
+    )
+    assert await verifier.verify_token(expired) is None
+
+
 def test_http_server_uses_the_supplied_token_verifier() -> None:
-    verifier = StaticTokenVerifier(frozenset({"token-a"}))
+    verifier = JavaDelegationVerifier(DELEGATION_SECRET)
 
     server = create_server(verifier)
 
@@ -76,7 +104,7 @@ def test_process_document_rest_endpoint_rejects_invalid_payload() -> None:
 def test_authenticated_rest_endpoint_requires_a_valid_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    server = create_server(StaticTokenVerifier(frozenset({"token-a"})))
+    server = create_server(JavaDelegationVerifier(DELEGATION_SECRET))
     monkeypatch.setattr(
         "aether_mcp_server.server.process_document",
         lambda **_kwargs: DocumentProcessingResult(markdown="# 文档"),
@@ -90,8 +118,44 @@ def test_authenticated_rest_endpoint_requires_a_valid_token(
         authorized = client.post(
             "/api/process-document",
             json={"source": "https://example.com/document.pdf"},
-            headers={"Authorization": "Bearer token-a"},
+            headers={"Authorization": "Bearer " + jwt.encode(
+                {
+                    "runId": "run-1", "userId": "user-1", "agentId": "agent-1",
+                    "allowedTools": ["process_document"],
+                    "exp": datetime.now(UTC) + timedelta(minutes=1),
+                },
+                DELEGATION_SECRET,
+                algorithm="HS256",
+            )},
         )
 
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
+
+
+def test_authenticated_rest_endpoint_rejects_token_without_the_tool_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = create_server(JavaDelegationVerifier(DELEGATION_SECRET))
+    monkeypatch.setattr(
+        "aether_mcp_server.server.process_document",
+        lambda **_kwargs: DocumentProcessingResult(markdown="# 文档"),
+    )
+    token = jwt.encode(
+        {
+            "runId": "run-1", "userId": "user-1", "agentId": "agent-1",
+            "allowedTools": ["get_current_time"],
+            "exp": datetime.now(UTC) + timedelta(minutes=1),
+        },
+        DELEGATION_SECRET,
+        algorithm="HS256",
+    )
+
+    with TestClient(server.streamable_http_app()) as client:
+        response = client.post(
+            "/api/process-document",
+            json={"source": "https://example.com/document.pdf"},
+            headers={"Authorization": "Bearer " + token},
+        )
+
+    assert response.status_code == 401

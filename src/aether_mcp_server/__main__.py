@@ -9,7 +9,7 @@ if "HF_ENDPOINT" not in os.environ:
 # Windows 无 symlink 支持时静默
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from .auth import StaticTokenVerifier, load_tokens
+from .auth import JavaDelegationVerifier, load_delegation_secret
 from .server import create_server, mcp
 
 
@@ -61,7 +61,10 @@ def main() -> None:
     if args.command == "http":
         verifier = None
         if args.auth:
-            verifier = StaticTokenVerifier(load_tokens())
+            delegation_secret = load_delegation_secret()
+            if delegation_secret is None:
+                raise ValueError("HTTP mode requires AETHER_MCP_DELEGATION_SECRET.")
+            verifier = JavaDelegationVerifier(delegation_secret)
         http_mcp = create_server(
             verifier,
             host=args.host,

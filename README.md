@@ -47,14 +47,14 @@ POST http://127.0.0.1:8000/api/process-document
 
 ## 可选 HTTP 认证
 
-HTTP 模式默认不使用认证。需要保护 MCP 端点时，使用 `--auth` 启用 Bearer Token 认证。`AETHER_MCP_TOKENS` 使用逗号分隔多个 Token，并会自动去除每项首尾空格。
+HTTP 模式默认不使用认证。需要保护 MCP 端点时，使用 `--auth` 启用 Bearer Token 认证。权限由 Java 服务统一管理：Java 按本次 Agent Run 签发短期 JWT，写入 `runId`、`userId`、`agentId` 和 `allowedTools`；Deep Agent 只透传该令牌，MCP 仅使用共享签名密钥验证令牌及工具范围，不维护静态 Token 白名单。
 
 ```powershell
-$env:AETHER_MCP_TOKENS = "replace-with-a-secret"
+$env:AETHER_MCP_DELEGATION_SECRET = "replace-with-a-32-byte-or-longer-shared-secret"
 uv run aether-mcp-server http --auth --host 127.0.0.1 --port 8000
 ```
 
-启用认证后，客户端请求需要携带 `Authorization: Bearer <token>`；未配置有效令牌时服务会拒绝启动。未使用 `--auth` 时，不读取该变量且 HTTP 请求不需要认证。stdio 模式不受影响。
+启用认证后，客户端请求需要携带 Java 签发的 `Authorization: Bearer <token>`；未配置委托签名密钥时服务会拒绝启动。令牌仅允许调用 `allowedTools` 中列出的工具，未使用 `--auth` 时 HTTP 请求不需要认证。stdio 模式不受影响。
 
 ## 可用的 MCP 原语
 

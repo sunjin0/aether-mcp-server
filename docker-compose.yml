@@ -4,8 +4,10 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Hugging Face 模型下载地址；网络受限时可替换为镜像地址。
       - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
-      - AETHER_MCP_TOKENS=${AETHER_MCP_TOKENS:-}
+      # 必须与 Java 的 AETHER_MCP_DELEGATION_SECRET 一致。
+      - AETHER_MCP_DELEGATION_SECRET=${AETHER_MCP_DELEGATION_SECRET:-aether-mcp-delegation-dev-secret-change-me}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
       - docling_cache:/root/.cache/docling

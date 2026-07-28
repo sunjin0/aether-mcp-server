@@ -9,7 +9,7 @@
 ## Runtime Behavior
 
 - `uv run aether-mcp-server` starts the stdio transport. `uv run aether-mcp-server http --host 127.0.0.1 --port 8000` starts Streamable HTTP at `/mcp`.
-- HTTP authentication is opt-in: add `--auth` and configure comma-separated `AETHER_MCP_TOKENS`; without `--auth`, do not require or read the token environment variable.
+- HTTP authentication is opt-in: add `--auth` and configure `AETHER_MCP_DELEGATION_SECRET`. Java is the only authorization authority: it signs short-lived run JWTs containing `runId`, `userId`, `agentId`, and `allowedTools`; Python services only forward them and MCP verifies them. Do not add static token allowlists.
 - Build authenticated HTTP servers through `create_server(...)` in `server.py`; it configures FastMCP `AuthSettings` together with the verifier.
 
 ## MCP Metadata

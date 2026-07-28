@@ -39,6 +39,7 @@ source = { editable = "." }
 dependencies = [
     { name = "docling", extra = ["rapidocr"] },
     { name = "mcp" },
+    { name = "pyjwt" },
 ]
 
 [package.dev-dependencies]
@@ -50,6 +51,7 @@ dev = [
 requires-dist = [
     { name = "docling", extras = ["rapidocr"], specifier = ">=2.0.0" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "pyjwt", specifier = ">=2.10.0" },
 ]
 
 [package.metadata.requires-dev]

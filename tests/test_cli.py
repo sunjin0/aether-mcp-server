@@ -58,11 +58,11 @@ def test_main_http_configures_server_then_dispatches(monkeypatch) -> None:
     assert calls == [((), {"transport": "streamable-http"})]
 
 
-def test_http_mode_rejects_missing_tokens_when_authentication_is_enabled(
+def test_http_mode_rejects_missing_delegation_secret_when_authentication_is_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("AETHER_MCP_TOKENS", raising=False)
+    monkeypatch.delenv("AETHER_MCP_DELEGATION_SECRET", raising=False)
     monkeypatch.setattr(sys, "argv", ["aether-mcp-server", "http", "--auth"])
 
-    with pytest.raises(ValueError, match="AETHER_MCP_TOKENS"):
+    with pytest.raises(ValueError, match="AETHER_MCP_DELEGATION_SECRET"):
         cli.main()
