@@ -1,6 +1,8 @@
 services:
   aether-mcp:
     build: .
+    # 启用 Java 委派 JWT 认证；未启用时 MCP 工具无法读取或校验工具权限。
+    command: ["http", "--auth", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     environment:

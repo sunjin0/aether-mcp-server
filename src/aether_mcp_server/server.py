@@ -3,11 +3,12 @@ import json
 import logging
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import anyio
+import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.auth.settings import AuthSettings
-from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -20,13 +21,63 @@ from .tools import current_time, echo, process_document
 logger = logging.getLogger(__name__)
 
 
-def require_tool_scope(tool_name: str) -> None:
-    """Enforce a Java-issued delegated JWT tool scope for every MCP call."""
-    token = get_access_token()
-    if token is None:
-        raise PermissionError("Missing authenticated access token")
-    if tool_name not in token.scopes:
-        raise PermissionError("Delegated token is not authorized for tool: " + tool_name)
+class DelegatedToolScopeMiddleware:
+    """Validate Java delegation JWT scopes before an MCP tool request is dispatched.
+
+    FastMCP's streamable HTTP session worker runs outside the authentication
+    context, so ``get_access_token()`` is unavailable inside tool functions.
+    Checking the JSON-RPC request at the ASGI boundary keeps the token and its
+    per-tool scope bound to the original HTTP request.
+    """
+
+    def __init__(self, app: Any, verifier: JavaDelegationVerifier) -> None:
+        self.app = app
+        self.verifier = verifier
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        chunks: list[bytes] = []
+        while True:
+            message = await receive()
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        try:
+            payload = json.loads(body)
+            method = payload.get("method") if isinstance(payload, dict) else None
+            tool_name = payload.get("params", {}).get("name") if method == "tools/call" else None
+        except (json.JSONDecodeError, AttributeError):
+            tool_name = None
+
+        if tool_name:
+            headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
+            scheme, _, raw_token = headers.get("authorization", "").partition(" ")
+            access_token = await self.verifier.verify_token(raw_token) if scheme.lower() == "bearer" and raw_token else None
+            if access_token is None or tool_name not in access_token.scopes:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id") if isinstance(payload, dict) else None,
+                    "error": {"code": -32604, "message": "Delegated token is not authorized for tool: " + str(tool_name)},
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
+                await send({"type": "http.response.body", "body": encoded})
+                return
+
+        delivered = False
+
+        async def replay_receive() -> dict[str, Any]:
+            nonlocal delivered
+            if delivered:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay_receive, send)
 
 
 async def require_request_scope(request: Request, tool_name: str, verifier: JavaDelegationVerifier) -> JSONResponse | None:
@@ -41,12 +92,10 @@ async def require_request_scope(request: Request, tool_name: str, verifier: Java
 
 
 def authorized_echo(message: str, ctx: Context) -> object:
-    require_tool_scope("echo_message")
     return echo(message)
 
 
 def authorized_current_time(ctx: Context) -> object:
-    require_tool_scope("get_current_time")
     return current_time()
 
 
@@ -57,7 +106,6 @@ def authorized_process_document(
     extract_tables: bool = True,
     ctx: Context | None = None,
 ) -> object:
-    require_tool_scope("process_document")
     return process_document(source, output_format, ocr, extract_tables)
 
 
@@ -75,19 +123,27 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 8000,
 ) -> FastMCP:
-    auth = None
-    if token_verifier is not None:
-        resource_server_url = f"http://{host}:{port}/mcp"
-        auth = AuthSettings(
-            issuer_url=resource_server_url,
-            resource_server_url=resource_server_url,
-        )
+    # HTTP 认证会启用 FastMCP 的 DNS 重绑定防护。共享 Docker 网络中的
+    # Deep Agent 通过服务名访问，必须将该服务名加入受信 Host 白名单。
+    allowed_hosts = [
+        f"{host}:{port}",
+        f"localhost:{port}",
+        f"127.0.0.1:{port}",
+        f"aether-mcp:{port}",
+        f"aether-mcp-server-aether-mcp-1:{port}",
+    ]
     server = FastMCP(
         "Aether MCP Server",
-        auth=auth,
-        token_verifier=token_verifier,
+        # 工具发现（initialize / ping / tools/list）只暴露公开元数据，交由
+        # Java 管理端的 Dashboard 权限保护。实际 tools/call 由最外层
+        # DelegatedToolScopeMiddleware 校验 Java 签发的短期 JWT 及工具范围。
+        # 不将 verifier 交给 FastMCP，避免它对发现请求也强制静态 Bearer Token。
         stateless_http=True,
         json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+        ),
     )
     server.tool(
         name="echo_message",
@@ -180,6 +236,18 @@ def create_server(
         return JSONResponse({"status": "ok"})
 
     return server
+
+
+async def run_http_server(server: FastMCP, verifier: JavaDelegationVerifier | None, host: str, port: int) -> None:
+    """Run the MCP HTTP transport behind the Java-delegated tool-scope gateway."""
+    app: Any = server.streamable_http_app()
+    if verifier is not None:
+        # 必须作为 Uvicorn 的最外层 ASGI 应用运行，不能使用 FastMCP 内部
+        # Starlette middleware；后者在当前版本不会包裹 /mcp 传输处理器。
+        app = DelegatedToolScopeMiddleware(app, verifier)
+    await uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level=server.settings.log_level.lower())
+    ).serve()
 
 
 mcp = create_server()

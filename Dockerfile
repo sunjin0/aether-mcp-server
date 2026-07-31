@@ -1,13 +1,7 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.11-slim
 
-RUN pip install --no-cache-dir uv
-
-WORKDIR /app
-
-# Layer 1: install dependencies (cached unless pyproject.toml/uv.lock changes)
-COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --no-dev --frozen --no-install-project
-
+# 系统运行库只依赖基础镜像，置于最前以便业务代码和 Python 依赖变更时复用缓存。
 # OpenCV（由 Docling 表格模型使用）在 slim 镜像中需要这些运行时库。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -16,9 +10,19 @@ RUN apt-get update \
         libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Layer 1: install dependencies (cached unless pyproject.toml/uv.lock changes)
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-dev --frozen --no-install-project
+
 # Layer 2: copy source and install project
 COPY src/ ./src/
-RUN uv sync --no-dev --frozen
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-dev --frozen
 
 ENV HF_ENDPOINT=https://huggingface.co \
     HF_HUB_DISABLE_SYMLINKS_WARNING=1 \

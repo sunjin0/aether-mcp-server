@@ -42,12 +42,12 @@ def test_main_defaults_to_stdio_dispatch(monkeypatch) -> None:
 def test_main_http_configures_server_then_dispatches(monkeypatch) -> None:
     calls = []
 
-    def run(*args, **kwargs) -> None:
+    async def run_http_server(*args, **kwargs) -> None:
         calls.append((args, kwargs))
 
     monkeypatch.setattr(sys, "argv", ["aether-mcp-server", "http", "--host", "0.0.0.0", "--port", "9000"])
     monkeypatch.setattr(cli, "create_server", lambda verifier, host, port: cli.mcp)
-    monkeypatch.setattr(cli.mcp, "run", run)
+    monkeypatch.setattr(cli, "run_http_server", run_http_server)
     monkeypatch.setattr(cli.mcp.settings, "host", cli.mcp.settings.host)
     monkeypatch.setattr(cli.mcp.settings, "port", cli.mcp.settings.port)
 
@@ -55,7 +55,7 @@ def test_main_http_configures_server_then_dispatches(monkeypatch) -> None:
 
     assert cli.mcp.settings.host == "0.0.0.0"
     assert cli.mcp.settings.port == 9000
-    assert calls == [((), {"transport": "streamable-http"})]
+    assert calls == [((cli.mcp, None, "0.0.0.0", 9000), {})]
 
 
 def test_http_mode_rejects_missing_delegation_secret_when_authentication_is_enabled(

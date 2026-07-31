@@ -10,7 +10,7 @@ if "HF_ENDPOINT" not in os.environ:
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from .auth import JavaDelegationVerifier, load_delegation_secret
-from .server import create_server, mcp
+from .server import create_server, mcp, run_http_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,7 +72,8 @@ def main() -> None:
         )
         http_mcp.settings.host = args.host
         http_mcp.settings.port = args.port
-        http_mcp.run(transport="streamable-http")
+        import anyio
+        anyio.run(run_http_server, http_mcp, verifier, args.host, args.port)
         return
     mcp.run()
 

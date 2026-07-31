@@ -62,12 +62,12 @@ async def test_verifier_rejects_expired_or_malformed_delegation_token() -> None:
     assert await verifier.verify_token(expired) is None
 
 
-def test_http_server_uses_the_supplied_token_verifier() -> None:
+def test_http_server_does_not_require_a_token_for_tool_discovery() -> None:
     verifier = JavaDelegationVerifier(DELEGATION_SECRET)
 
     server = create_server(verifier)
 
-    assert server._token_verifier is verifier
+    assert server._token_verifier is None
 
 
 def test_process_document_rest_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
