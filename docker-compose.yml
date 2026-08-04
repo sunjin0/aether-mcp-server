@@ -10,6 +10,8 @@ services:
       - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
       # 必须与 Java 的 AETHER_MCP_DELEGATION_SECRET 一致。
       - AETHER_MCP_DELEGATION_SECRET=${AETHER_MCP_DELEGATION_SECRET:-aether-mcp-delegation-dev-secret-change-me}
+      # 浏览器传来的 localhost 文件 URL 在容器内应改为 admin 服务地址。
+      - AETHER_ADMIN_INTERNAL_URL=${AETHER_ADMIN_INTERNAL_URL:-http://aether-admin:8080}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
       - docling_cache:/root/.cache/docling

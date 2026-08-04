@@ -7,6 +7,7 @@ from docling.datamodel.base_models import InputFormat
 from aether_mcp_server.tools import (
     DocumentProcessingResult,
     _is_internal_url,
+    _resolve_admin_file_url,
     current_time,
     echo,
     process_document,
@@ -39,6 +40,21 @@ class TestProcessDocument:
         assert _is_internal_url("http://10.0.0.1/report.pdf")
         assert _is_internal_url("http://127.0.0.1/report.pdf")
         assert not _is_internal_url("https://8.8.8.8/report.pdf")
+
+    def test_rewrites_browser_local_file_url_to_admin_service(self, monkeypatch) -> None:
+        monkeypatch.setenv("AETHER_ADMIN_INTERNAL_URL", "http://aether-admin:8080")
+
+        result = _resolve_admin_file_url(
+            "http://localhost:8001/api/file/chat/preview?objectKey=chat%2Freport.pdf"
+        )
+
+        assert result == "http://aether-admin:8080/api/file/chat/preview?objectKey=chat%2Freport.pdf"
+
+    def test_does_not_rewrite_non_file_or_external_urls(self, monkeypatch) -> None:
+        monkeypatch.setenv("AETHER_ADMIN_INTERNAL_URL", "http://aether-admin:8080")
+
+        assert _resolve_admin_file_url("http://localhost:8001/health") == "http://localhost:8001/health"
+        assert _resolve_admin_file_url("https://example.com/api/file/preview") == "https://example.com/api/file/preview"
 
     def test_public_url_is_passed_directly_to_docling(self) -> None:
         source = "https://example.com/doc.pdf"

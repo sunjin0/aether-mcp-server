@@ -39,6 +39,13 @@ class DelegatedToolScopeMiddleware:
             await self.app(scope, receive, send)
             return
 
+        headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
+        if not headers.get("content-type", "").lower().startswith("application/json"):
+            # Multipart uploads are authorized by their REST endpoint. Reading
+            # them here would try to parse binary file content as JSON.
+            await self.app(scope, receive, send)
+            return
+
         chunks: list[bytes] = []
         while True:
             message = await receive()
@@ -50,11 +57,10 @@ class DelegatedToolScopeMiddleware:
             payload = json.loads(body)
             method = payload.get("method") if isinstance(payload, dict) else None
             tool_name = payload.get("params", {}).get("name") if method == "tools/call" else None
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
             tool_name = None
 
         if tool_name:
-            headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
             scheme, _, raw_token = headers.get("authorization", "").partition(" ")
             access_token = await self.verifier.verify_token(raw_token) if scheme.lower() == "bearer" and raw_token else None
             if access_token is None or tool_name not in access_token.scopes:

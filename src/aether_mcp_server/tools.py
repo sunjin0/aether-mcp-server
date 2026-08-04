@@ -1,5 +1,6 @@
 import logging
 import ipaddress
+import os
 import shutil
 import socket
 import tempfile
@@ -7,7 +8,7 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from docling.document_converter import (
     DocumentConverter,
@@ -68,6 +69,24 @@ def _download_to_temp(source: str) -> Path:
     return tmp_path
 
 
+def _resolve_admin_file_url(source: str) -> str:
+    """Use the Docker-network admin address for browser-local file URLs."""
+    parsed = urlparse(source)
+    admin_url = os.getenv("AETHER_ADMIN_INTERNAL_URL", "").rstrip("/")
+    if (
+        not admin_url
+        or parsed.hostname not in ("localhost", "127.0.0.1", "::1")
+        or not parsed.path.startswith("/api/file/")
+    ):
+        return source
+
+    admin = urlparse(admin_url)
+    if admin.scheme not in ("http", "https") or not admin.netloc:
+        logger.warning("Ignoring invalid AETHER_ADMIN_INTERNAL_URL")
+        return source
+    return urlunparse((admin.scheme, admin.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
 def _is_internal_url(source: str) -> bool:
     """判断 HTTP(S) URL 是否解析到私有或本机地址。"""
     parsed = urlparse(source)
@@ -106,6 +125,7 @@ def process_document(
         Field(default=True, description="是否提取表格结构。"),
     ] = True,
 ) -> DocumentProcessingResult:
+    source = _resolve_admin_file_url(source)
     logger.info("process_document called: source=%s output_format=%s ocr=%s extract_tables=%s", source, output_format, ocr, extract_tables)
 
     local_path = _download_to_temp(source) if _is_internal_url(source) else None
