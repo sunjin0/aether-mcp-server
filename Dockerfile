@@ -12,6 +12,11 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir uv
 
+# Docling 的可选 GPU 依赖较大；默认 30 秒下载超时在受限网络中不足。
+# 文档解析服务不需要 GPU，因此构建时固定 CPU PyTorch 后端。
+ENV UV_HTTP_TIMEOUT=300 \
+    UV_TORCH_BACKEND=cpu
+
 WORKDIR /app
 
 # Layer 1: install dependencies (cached unless pyproject.toml/uv.lock changes)

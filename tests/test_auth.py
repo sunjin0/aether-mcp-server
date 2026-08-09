@@ -4,7 +4,12 @@ from datetime import UTC, datetime, timedelta
 from starlette.testclient import TestClient
 
 from aether_mcp_server.auth import JavaDelegationVerifier, load_delegation_secret
-from aether_mcp_server.server import DelegatedToolScopeMiddleware, create_server
+from aether_mcp_server.server import (
+    DelegatedToolScopeMiddleware,
+    authorized_generate_artifact,
+    create_server,
+    delegated_token,
+)
 from aether_mcp_server.tools import DocumentProcessingResult
 
 
@@ -60,6 +65,25 @@ async def test_verifier_rejects_expired_or_malformed_delegation_token() -> None:
         DELEGATION_SECRET, algorithm="HS256",
     )
     assert await verifier.verify_token(expired) is None
+
+
+def test_generate_artifact_uses_verified_delegation_token_when_model_does_not_supply_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "aether_mcp_server.server.generate_artifact",
+        lambda skill_code, input, token: captured.update(
+            skill_code=skill_code, input=input, token=token
+        ) or {"status": "queued"},
+    )
+    token_context = delegated_token.set("verified-java-token")
+    try:
+        assert authorized_generate_artifact("personal-resume-generator", {"name": "Li"}) == {"status": "queued"}
+    finally:
+        delegated_token.reset(token_context)
+
+    assert captured["token"] == "verified-java-token"
 
 
 def test_http_server_does_not_require_a_token_for_tool_discovery() -> None:

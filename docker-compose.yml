@@ -16,6 +16,33 @@ services:
       - huggingface_cache:/root/.cache/huggingface
       - docling_cache:/root/.cache/docling
 
+  sandbox-runner:
+    build:
+      context: .
+      dockerfile: sandbox-runner/Dockerfile
+    restart: unless-stopped
+    environment:
+      AETHER_ADMIN_INTERNAL_URL: ${AETHER_ADMIN_INTERNAL_URL:-http://aether-admin:8080}
+      AETHER_SANDBOX_RUNNER_TOKEN: ${AETHER_SANDBOX_RUNNER_TOKEN:-aether-sandbox-runner-dev-secret-change-me}
+      AETHER_SANDBOX_PYTHON_IMAGE: ${AETHER_SANDBOX_PYTHON_IMAGE:-aether-sandbox-python:1}
+      AETHER_SANDBOX_NODE_IMAGE: ${AETHER_SANDBOX_NODE_IMAGE:-aether-sandbox-node:1}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  sandbox-runtime-python:
+    image: aether-sandbox-python:1
+    build:
+      context: .
+      dockerfile: sandbox-runtime/python.Dockerfile
+    command: ["true"]
+
+  sandbox-runtime-node:
+    image: aether-sandbox-node:1
+    build:
+      context: .
+      dockerfile: sandbox-runtime/node.Dockerfile
+    command: ["true"]
+
 volumes:
   huggingface_cache:
   docling_cache:

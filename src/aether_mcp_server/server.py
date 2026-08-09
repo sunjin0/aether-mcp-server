@@ -2,6 +2,7 @@ import functools
 import json
 import logging
 import tempfile
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +18,10 @@ from .auth import JavaDelegationVerifier
 from .prompts import greet
 from .resources import welcome
 from .tools import current_time, echo, process_document
+from .artifact import generate_artifact
 
 logger = logging.getLogger(__name__)
+delegated_token: ContextVar[str | None] = ContextVar("delegated_token", default=None)
 
 
 class DelegatedToolScopeMiddleware:
@@ -60,6 +63,7 @@ class DelegatedToolScopeMiddleware:
         except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
             tool_name = None
 
+        token_context = None
         if tool_name:
             scheme, _, raw_token = headers.get("authorization", "").partition(" ")
             access_token = await self.verifier.verify_token(raw_token) if scheme.lower() == "bearer" and raw_token else None
@@ -73,6 +77,9 @@ class DelegatedToolScopeMiddleware:
                 await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
                 await send({"type": "http.response.body", "body": encoded})
                 return
+            # ContextVars are copied into the FastMCP worker task.  The tool never
+            # receives a user-controlled identity; it only forwards this verified JWT.
+            token_context = delegated_token.set(raw_token)
 
         delivered = False
 
@@ -83,7 +90,11 @@ class DelegatedToolScopeMiddleware:
             delivered = True
             return {"type": "http.request", "body": body, "more_body": False}
 
-        await self.app(scope, replay_receive, send)
+        try:
+            await self.app(scope, replay_receive, send)
+        finally:
+            if token_context is not None:
+                delegated_token.reset(token_context)
 
 
 async def require_request_scope(request: Request, tool_name: str, verifier: JavaDelegationVerifier) -> JSONResponse | None:
@@ -113,6 +124,13 @@ def authorized_process_document(
     ctx: Context | None = None,
 ) -> object:
     return process_document(source, output_format, ocr, extract_tables)
+
+
+def authorized_generate_artifact(skill_code: str, input: dict[str, Any] | None = None, aether_delegation: str | None = None, ctx: Context | None = None) -> object:
+    # Java's synchronous MCP executor passes the token explicitly. Deep Agent
+    # calls use the already verified HTTP Authorization token captured by the
+    # middleware, because the model must never be asked to provide a secret.
+    return generate_artifact(skill_code, input or {}, aether_delegation or delegated_token.get())
 
 
 class ProcessDocumentRequest(BaseModel):
@@ -166,6 +184,11 @@ def create_server(
         title="文档处理",
         description="从 URL 下载文档并使用 Docling 进行格式转换与分析（支持 PDF/DOCX/PPTX 等格式）。",
     )(authorized_process_document)
+    server.tool(
+        name="generate_artifact",
+        title="生成受控文件产物",
+        description="申请执行当前 Agent 已安装 Skill 的已发布入口，生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。",
+    )(authorized_generate_artifact)
 
     @server.custom_route("/api/process-document", methods=["POST"])
     async def process_document_http(request: Request) -> JSONResponse:
