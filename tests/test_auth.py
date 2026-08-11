@@ -73,17 +73,18 @@ def test_generate_artifact_uses_verified_delegation_token_when_model_does_not_su
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "aether_mcp_server.server.generate_artifact",
-        lambda skill_code, input, token: captured.update(
-            skill_code=skill_code, input=input, token=token
+        lambda title, content, format, file_name, document, token: captured.update(
+            title=title, content=content, format=format, file_name=file_name, document=document, token=token
         ) or {"status": "queued"},
     )
     token_context = delegated_token.set("verified-java-token")
     try:
-        assert authorized_generate_artifact("personal-resume-generator", {"name": "Li"}) == {"status": "queued"}
+        assert authorized_generate_artifact("风险台账", "# 风险台账", "docx") == {"status": "queued"}
     finally:
         delegated_token.reset(token_context)
 
     assert captured["token"] == "verified-java-token"
+    assert captured["format"] == "docx"
 
 
 def test_http_server_does_not_require_a_token_for_tool_discovery() -> None:

@@ -4,4 +4,5 @@ FROM docker:27-cli
 RUN apk add --no-cache python3
 WORKDIR /runner
 COPY sandbox-runner/runner.py ./runner.py
+COPY sandbox-runner/generic_artifact.py ./generic_artifact.py
 CMD ["python", "runner.py"]

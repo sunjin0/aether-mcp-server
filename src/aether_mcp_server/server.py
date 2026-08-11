@@ -126,11 +126,13 @@ def authorized_process_document(
     return process_document(source, output_format, ocr, extract_tables)
 
 
-def authorized_generate_artifact(skill_code: str, input: dict[str, Any] | None = None, aether_delegation: str | None = None, ctx: Context | None = None) -> object:
+def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
+                                document: dict[str, Any] | None = None,
+                                aether_delegation: str | None = None, ctx: Context | None = None) -> object:
     # Java's synchronous MCP executor passes the token explicitly. Deep Agent
     # calls use the already verified HTTP Authorization token captured by the
     # middleware, because the model must never be asked to provide a secret.
-    return generate_artifact(skill_code, input or {}, aether_delegation or delegated_token.get())
+    return generate_artifact(title, content, format, file_name, document, aether_delegation or delegated_token.get())
 
 
 class ProcessDocumentRequest(BaseModel):
@@ -187,7 +189,7 @@ def create_server(
     server.tool(
         name="generate_artifact",
         title="生成受控文件产物",
-        description="申请执行当前 Agent 已安装 Skill 的已发布入口，生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。",
+        description="根据已生成的正文或结构化计划，使用平台通用渲染器生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。当前命中的 Skill 只提供内容与格式规范，不选择脚本或模板。",
     )(authorized_generate_artifact)
 
     @server.custom_route("/api/process-document", methods=["POST"])

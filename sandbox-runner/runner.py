@@ -19,6 +19,7 @@ ADMIN_URL = os.environ.get("AETHER_ADMIN_INTERNAL_URL", "http://aether-admin:808
 RUNNER_TOKEN = os.environ["AETHER_SANDBOX_RUNNER_TOKEN"]
 POLL_SECONDS = float(os.environ.get("AETHER_SANDBOX_POLL_SECONDS", "2"))
 IMAGES = {"PYTHON": os.environ.get("AETHER_SANDBOX_PYTHON_IMAGE", "aether-sandbox-python:1"), "NODE": os.environ.get("AETHER_SANDBOX_NODE_IMAGE", "aether-sandbox-node:1")}
+PLATFORM_GENERIC_ENTRY = "__platform_generic_renderer__"
 
 
 def request(path: str, method: str = "POST", data: bytes | None = None, content_type: str = "application/json", execution_token: str | None = None) -> bytes:
@@ -106,6 +107,14 @@ def run(task: dict) -> None:
             if hashlib.sha256(data).hexdigest() != item["contentSha256"]: raise ValueError("resource checksum mismatch")
             volume_write(resource_volume, image, "/work/" + item["name"], data)
             if item["id"] == task["entryResourceId"]: entry = item["name"]
+        if task["entryResourceId"] == PLATFORM_GENERIC_ENTRY:
+            entry = "platform_generic_artifact.py"
+            volume_write(
+                resource_volume,
+                image,
+                "/work/" + entry,
+                Path(__file__).with_name("generic_artifact.py").read_bytes(),
+            )
         if not entry: raise ValueError("entry resource missing")
         input_json = json.dumps(task["input"], ensure_ascii=False)
         volume_write(input_volume, image, "/work/input.json", input_json.encode("utf-8"))

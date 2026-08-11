@@ -15,14 +15,17 @@ class ArtifactGenerationResult(BaseModel):
 
 
 def generate_artifact(
-    skill_code: Annotated[str, Field(description="当前 Agent 已安装且已发布的 Skill 编码。")],
-    input: Annotated[dict[str, Any], Field(description="符合该 Skill 输入契约的 JSON 数据。")] = {},
+    title: Annotated[str, Field(description="文档标题。")],
+    content: Annotated[str, Field(description="待生成的完整 Markdown 或正文内容。")],
+    format: Annotated[str, Field(description="输出格式，仅支持 docx、xlsx 或 pdf。")],
+    file_name: Annotated[str | None, Field(description="可选文件名；未提供时由平台根据标题生成。 ")] = None,
+    document: Annotated[dict[str, Any] | None, Field(description="可选结构化文档计划，用于表格或多工作表。 ")] = None,
     delegation_token: str | None = None,
 ) -> ArtifactGenerationResult:
     if not delegation_token:
         raise ValueError("缺少已验证的委派执行令牌")
     base_url = os.environ.get("AETHER_ADMIN_INTERNAL_URL", "http://aether-admin:8080").rstrip("/")
-    payload = json.dumps({"skillCode": skill_code, "input": input}, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps({"title": title, "content": content, "format": format, "fileName": file_name, "document": document or {}}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         base_url + "/api/internal/sandbox/requests", data=payload, method="POST",
         headers={"Content-Type": "application/json", "X-Aether-Delegation": delegation_token},
