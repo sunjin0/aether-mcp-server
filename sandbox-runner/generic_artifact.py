@@ -111,6 +111,8 @@ def render_xlsx(title: str, content: str, document_plan: dict, output: Path):
 def render_pdf(title: str, content: str, output: Path):
     from weasyprint import HTML
     blocks, lines, index = [], list(markdown_lines(content)), 0
+    unordered = re.compile(r"^\s*[-+*]\s+(.+)$")
+    ordered = re.compile(r"^\s*(?:\d+[.)]|[一二三四五六七八九十]+、)\s*(.+)$")
     while index < len(lines):
         line = lines[index]
         if line.strip().startswith("|"):
@@ -122,15 +124,15 @@ def render_pdf(title: str, content: str, output: Path):
                 header, body = rows[0], rows[1:]
                 blocks.append("<table><thead><tr>" + "".join("<th>" + inline_markdown(cell) + "</th>" for cell in header) + "</tr></thead><tbody>" + "".join("<tr>" + "".join("<td>" + inline_markdown(cell) + "</td>" for cell in row) + "</tr>" for row in body) + "</tbody></table>")
             continue
-        if line.startswith("- ") or line.startswith("* "):
+        if unordered.match(line):
             items = []
-            while index < len(lines) and (lines[index].startswith("- ") or lines[index].startswith("* ")):
-                items.append("<li>" + inline_markdown(lines[index][2:]) + "</li>"); index += 1
+            while index < len(lines) and unordered.match(lines[index]):
+                items.append("<li>" + inline_markdown(unordered.match(lines[index]).group(1)) + "</li>"); index += 1
             blocks.append("<ul>" + "".join(items) + "</ul>"); continue
-        if re.match(r"^\d+\.\s+", line):
+        if ordered.match(line):
             items = []
-            while index < len(lines) and re.match(r"^\d+\.\s+", lines[index]):
-                items.append("<li>" + inline_markdown(re.sub(r"^\d+\.\s+", "", lines[index])) + "</li>"); index += 1
+            while index < len(lines) and ordered.match(lines[index]):
+                items.append("<li>" + inline_markdown(ordered.match(lines[index]).group(1)) + "</li>"); index += 1
             blocks.append("<ol>" + "".join(items) + "</ol>"); continue
         heading = re.match(r"^(#{1,4})\s*(.*)$", line)
         if heading:
