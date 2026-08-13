@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -50,6 +51,77 @@ def inline_markdown(value: str) -> str:
         return label
 
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, text)
+
+
+HTML_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "strong", "b", "em", "i", "u", "s", "del", "br", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "blockquote", "hr", "pre", "code", "a"}
+VOID_HTML_TAGS = {"br", "hr"}
+BLOCKED_HTML_TAGS = {"script", "style", "iframe", "object", "embed", "svg", "math", "form", "input", "button", "video", "audio", "canvas", "head", "title"}
+SAFE_STYLE_PROPERTIES = {"color", "background-color", "font-size", "font-weight", "font-style", "text-align", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "padding", "padding-top", "padding-right", "padding-bottom", "padding-left", "border", "border-collapse", "width", "height", "line-height", "white-space"}
+
+
+def sanitize_style(value: str) -> str:
+    safe = []
+    for declaration in (value or "").split(";"):
+        if ":" not in declaration:
+            continue
+        name, css_value = (part.strip() for part in declaration.split(":", 1))
+        lowered = css_value.lower()
+        if name.lower() not in SAFE_STYLE_PROPERTIES or any(token in lowered for token in ("url(", "@import", "expression(", "javascript:", "behavior:")):
+            continue
+        safe.append(name.lower() + ":" + css_value)
+    return ";".join(safe)
+
+
+class SafeHtml(HTMLParser):
+    """Keep layout-only HTML; discard code, resources and active attributes."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.blocked_depth = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in BLOCKED_HTML_TAGS:
+            self.blocked_depth += 1
+            return
+        if self.blocked_depth or tag not in HTML_TAGS:
+            return
+        allowed = []
+        for name, value in attrs:
+            name, value = name.lower(), value or ""
+            if name == "style":
+                cleaned = sanitize_style(value)
+                if cleaned:
+                    allowed.append((name, cleaned))
+            elif tag == "a" and name == "href" and re.fullmatch(r"https?://[^\s<>]+", value, re.IGNORECASE):
+                allowed.append((name, value))
+        rendered = "".join(" %s=\"%s\"" % (name, html.escape(value, quote=True)) for name, value in allowed)
+        self.parts.append("<" + tag + rendered + ">")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in BLOCKED_HTML_TAGS:
+            self.blocked_depth = max(0, self.blocked_depth - 1)
+            return
+        if not self.blocked_depth and tag in HTML_TAGS and tag not in VOID_HTML_TAGS:
+            self.parts.append("</" + tag + ">")
+
+    def handle_data(self, data):
+        if not self.blocked_depth:
+            self.parts.append(html.escape(data))
+
+
+def looks_like_html(content: str) -> bool:
+    return bool(re.search(r"<!doctype\s+html|<(?:html|body|h[1-6]|p|div|span|table|ul|ol|blockquote)\b", content or "", re.IGNORECASE))
+
+
+def sanitize_html(content: str) -> str:
+    parser = SafeHtml()
+    parser.feed(content or "")
+    parser.close()
+    return "".join(parser.parts)
 
 
 def render_docx(title: str, content: str, output: Path):
@@ -110,6 +182,9 @@ def render_xlsx(title: str, content: str, document_plan: dict, output: Path):
 
 def render_pdf(title: str, content: str, output: Path):
     from weasyprint import HTML
+    if looks_like_html(content):
+        render_pdf_html(title, content, output)
+        return
     blocks, lines, index = [], list(markdown_lines(content)), 0
     unordered = re.compile(r"^\s*[-+*]\s+(.+)$")
     ordered = re.compile(r"^\s*(?:\d+[.)]|[一二三四五六七八九十]+、)\s*(.+)$")
@@ -141,6 +216,14 @@ def render_pdf(title: str, content: str, output: Path):
         index += 1
     style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}strong{font-weight:700}em{font-style:italic}del{color:#6b7280;text-decoration:line-through}code{font-family:monospace;background:#f1f5f9;border-radius:3pt;padding:1pt 3pt;color:#9f1239}a{color:#2563eb;text-decoration:underline}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt;table-layout:auto;page-break-inside:auto}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}"""
     HTML(string="<meta charset='utf-8'><style>" + style + "</style><h1>" + html.escape(title) + "</h1>" + "".join(blocks)).write_pdf(output)
+
+
+def render_pdf_html(title: str, content: str, output: Path):
+    """Render agent-provided HTML only after removing active and remote-capable parts."""
+    from weasyprint import HTML
+    style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}a{color:#2563eb;text-decoration:underline}pre{white-space:pre-wrap;background:#f8fafc;padding:8pt}code{font-family:monospace}"""
+    safe_body = sanitize_html(content)
+    HTML(string="<meta charset='utf-8'><style>" + style + "</style><h1>" + html.escape(title) + "</h1>" + safe_body).write_pdf(output)
 
 
 def main():
