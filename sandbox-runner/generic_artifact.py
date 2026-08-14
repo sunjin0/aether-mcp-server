@@ -22,6 +22,21 @@ def markdown_lines(content: str):
         yield line.rstrip()
 
 
+def is_duplicate_title_heading(line: str, title: str) -> bool:
+    """Return true only for a leading Markdown H1 that repeats the artifact title."""
+    heading = re.match(r"^#\s+(.+?)\s*$", line or "")
+    return heading is not None and heading.group(1).strip() == (title or "").strip()
+
+
+def strip_duplicate_html_title(content: str, title: str) -> str:
+    """The renderer owns the document H1, so remove an identical leading body H1."""
+    escaped_title = re.escape(html.escape((title or "").strip()))
+    if not escaped_title:
+        return content
+    return re.sub(r"^\s*<h1(?:\s[^>]*)?>\s*" + escaped_title + r"\s*</h1>\s*", "", content,
+                  count=1, flags=re.IGNORECASE)
+
+
 def parse_table(lines):
     rows = []
     for line in lines:
@@ -132,6 +147,9 @@ def render_docx(title: str, content: str, output: Path):
     index = 0
     while index < len(lines):
         line = lines[index]
+        if index == 0 and is_duplicate_title_heading(line, title):
+            index += 1
+            continue
         if line.startswith("#"):
             heading = re.match(r"^(#{1,6})\s*(.*)$", line)
             if heading:
@@ -190,6 +208,9 @@ def render_pdf(title: str, content: str, output: Path):
     ordered = re.compile(r"^\s*(?:\d+[.)]|[一二三四五六七八九十]+、)\s*(.+)$")
     while index < len(lines):
         line = lines[index]
+        if index == 0 and is_duplicate_title_heading(line, title):
+            index += 1
+            continue
         if line.strip().startswith("|"):
             table_lines = []
             while index < len(lines) and lines[index].strip().startswith("|"):
@@ -222,7 +243,7 @@ def render_pdf_html(title: str, content: str, output: Path):
     """Render agent-provided HTML only after removing active and remote-capable parts."""
     from weasyprint import HTML
     style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}a{color:#2563eb;text-decoration:underline}pre{white-space:pre-wrap;background:#f8fafc;padding:8pt}code{font-family:monospace}"""
-    safe_body = sanitize_html(content)
+    safe_body = strip_duplicate_html_title(sanitize_html(content), title)
     HTML(string="<meta charset='utf-8'><style>" + style + "</style><h1>" + html.escape(title) + "</h1>" + safe_body).write_pdf(output)
 
 
