@@ -18,10 +18,12 @@ from .auth import JavaDelegationVerifier
 from .prompts import greet
 from .resources import welcome
 from .tools import current_time, echo, process_document
-from .artifact import generate_artifact
+from .artifact import ArtifactGenerationResult, generate_artifact
+from .idempotency import IdempotencyStore, decode_run_id, execute_idempotently
 
 logger = logging.getLogger(__name__)
 delegated_token: ContextVar[str | None] = ContextVar("delegated_token", default=None)
+IDEMPOTENCY_STORE = IdempotencyStore()
 
 
 class DelegatedToolScopeMiddleware:
@@ -132,7 +134,21 @@ def authorized_generate_artifact(title: str, content: str, format: str, file_nam
     # Java's synchronous MCP executor passes the token explicitly. Deep Agent
     # calls use the already verified HTTP Authorization token captured by the
     # middleware, because the model must never be asked to provide a secret.
-    return generate_artifact(title, content, format, file_name, document, aether_delegation or delegated_token.get())
+    delegation = aether_delegation or delegated_token.get()
+    if not delegation:
+        raise ValueError("缺少已验证的委派执行令牌")
+    # 同一运行内重试相同参数的工具调用直接返回已确认的产物执行结果，
+    # 避免重复提交渲染任务。跨重启的幂等由 Deep Agent 检查点/outbox 恢复负责。
+    run_id = decode_run_id(delegation)
+    arguments = {"title": title, "content": content, "format": format,
+                 "file_name": file_name, "document": document}
+    result = execute_idempotently(
+        IDEMPOTENCY_STORE, run_id, "generate_artifact", arguments,
+        lambda: generate_artifact(title, content, format, file_name, document, delegation).model_dump(),
+    )
+    if run_id and result.get("run_id"):
+        logger.info("generate_artifact idempotent action: runId=%s executionId=%s", run_id, result.get("execution_id"))
+    return ArtifactGenerationResult(**result)
 
 
 class ProcessDocumentRequest(BaseModel):
@@ -265,6 +281,11 @@ def create_server(
     @server.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
+
+    @server.custom_route("/metrics", methods=["GET"])
+    async def metrics(request: Request) -> JSONResponse:
+        """动作幂等命中率等轻量运行指标，供运营侧对账工具幂等命中率。"""
+        return JSONResponse(IDEMPOTENCY_STORE.stats())
 
     return server
 
