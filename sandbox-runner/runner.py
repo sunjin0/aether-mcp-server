@@ -1,7 +1,7 @@
-"""Dedicated control-plane worker for disposable, networkless artifact jobs.
+"""用于一次性无网络产物任务的专用控制面工作进程。
 
-This process is the only service allowed to talk to the container engine.  Job
-containers receive neither the engine socket nor the Aether network.
+该进程是唯一允许访问容器引擎的服务。任务容器既不会获得引擎套接字，也不会接入
+Aether 网络。
 """
 import hashlib
 import json
@@ -64,7 +64,7 @@ def fail(task: dict, reason: str, logs: str) -> None:
 
 
 def heartbeat(task: dict, logs: str = "") -> bool:
-    """Renew the control-plane lease; True means the requester cancelled."""
+    """续租控制面任务；返回 True 表示请求方已取消。"""
     payload = urllib.parse.urlencode({"logSummary": logs[-4096:]}).encode()
     data = json.loads(request(
         f"/api/internal/sandbox/runner/executions/{task['executionId']}/heartbeat",
@@ -135,10 +135,10 @@ def task_container(task: dict) -> str:
 
 
 def image_for(task: dict) -> str:
-    """A template may opt into a digest-pinned image; Agents never supply this value."""
+    """模板可选择摘要固定镜像；Agent 不得提供该值。"""
     requested = str(task.get("imageRef") or "")
     if not requested:
-        return IMAGES[task["runtime"]]  # legacy templates retain their deployed Runner image.
+        return IMAGES[task["runtime"]]  # 旧版模板继续使用已部署的 Runner 镜像。
     if not re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}", requested):
         raise ValueError("template image is not digest-pinned")
     if requested not in ALLOWED_IMAGE_DIGESTS:
@@ -177,7 +177,7 @@ def run(task: dict) -> None:
             subprocess.run(["docker", "volume", "create", volume], capture_output=True, check=True)
         entry = None
         for item in task["resources"]:
-            # The filename arrives from an immutable Skill resource.  Prevent traversal even if legacy data is bad.
+            # 文件名来自不可变 Skill 资源；即使旧数据异常也要阻止目录穿越。
             if Path(item["name"]).name != item["name"]: raise ValueError("invalid frozen resource filename")
             data = resource(task, item["id"])
             if hashlib.sha256(data).hexdigest() != item["contentSha256"]: raise ValueError("resource checksum mismatch")
@@ -197,8 +197,7 @@ def run(task: dict) -> None:
         volume_command(output_volume, image, "chmod 777 /work")
         command = ["python", f"/work/resources/{entry}"] if task["runtime"] == "PYTHON" else ["node", f"/work/resources/{entry}"]
         docker = ["docker", "run", "--rm", "--name", container_name, "-i", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "--memory", "512m", "--cpus", "1", "--user", "10001:10001", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-e", "XDG_CACHE_HOME=/tmp/.cache", "-e", "AETHER_INPUT_JSON=" + input_json, "-e", "AETHER_INPUT_FILE=/work/input/input.json", "-e", "AETHER_RESOURCE_DIR=/work/resources", "-e", "AETHER_OUTPUT_DIR=/work/output", "-v", f"{resource_volume}:/work/resources:ro", "-v", f"{input_volume}:/work/input:ro", "-v", f"{output_volume}:/work/output:rw", "-w", "/work", image] + command
-        # Frozen input is already supplied through AETHER_INPUT_JSON and the
-        # read-only input file; do not keep an extra stdin pipe open.
+        # 冻结输入已通过 AETHER_INPUT_JSON 和只读文件提供，无需保留额外 stdin 管道。
         started = time.monotonic()
         process = subprocess.Popen(docker, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         deadline = time.monotonic() + float(task["timeoutSeconds"])
@@ -208,9 +207,8 @@ def run(task: dict) -> None:
                 process.kill()
                 subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
                 raise RuntimeError("sandbox process timed out")
-            # The control plane is the cancellation authority.  Keep the lease
-            # alive during execution and immediately stop the daemon container
-            # when the requester cancels.
+            # 控制面是取消操作的唯一裁决方。执行期间持续续租，请求方取消后立即停止
+            # 守护容器。
             if heartbeat(task):
                 cancelled = True
                 process.kill()
@@ -239,11 +237,11 @@ def run(task: dict) -> None:
 
 
 def run_v2(task: dict) -> None:
-    """Execute only the template-gated script slot for a new-protocol task."""
+    """只执行新协议任务中由模板放行的脚本槽位。"""
     task_for_volume = dict(task, executionId=task["taskId"])
     resources, input_volume, output = task_volume(task_for_volume, "resources"), task_volume(task_for_volume, "input"), task_volume(task_for_volume, "output")
     container_name, image, logs = task_container(task_for_volume), "", ""
-    # Start before setup so rejected/failed setup and cancelled jobs are still auditable.
+    # 在准备阶段前开始计时，使被拒绝、准备失败和取消的任务也具有可审计记录。
     started, output_bytes, exit_code, usage_reported = time.monotonic(), 0, None, False
     try:
         image = image_for(task)
@@ -269,6 +267,7 @@ def run_v2(task: dict) -> None:
             content = v2_input(task, input_id)
             if len(content) != int(item.get("size") or -1) or hashlib.sha256(content).hexdigest() != str(item.get("sha256") or ""): raise ValueError("frozen input checksum mismatch")
             local_name = input_id + "-" + file_name
+            # 仅使用已校验的 ID 和文件名构造容器内路径，隔离输入工件。
             volume_write(input_volume, image, "/work/" + local_name, content)
             input_manifest.append({"id": input_id, "fileName": file_name, "contentType": item.get("contentType"), "size": item.get("size"), "sha256": item.get("sha256"), "path": "/work/input/" + local_name})
         volume_command(output, image, "chmod 777 /work")
@@ -301,8 +300,7 @@ def run_v2(task: dict) -> None:
         outputs = [(n, volume_read(output, image, "/work/" + n)) for n in names]
         if any(len(c) > task["maxOutputBytes"] for _, c in outputs): raise ValueError("output exceeds declared limit")
         output_bytes, exit_code = sum(len(c) for _, c in outputs), process.returncode
-        # The final artifact marks the task terminal on the control plane, so
-        # successful usage must be persisted before that callback.
+        # 最终产物会使控制面任务进入终态，因此必须先持久化成功用量。
         v2_usage(task, int((time.monotonic() - started) * 1000), output_bytes, exit_code)
         usage_reported = True
         for index, (name, content) in enumerate(outputs): v2_complete(task, name, content, logs, index == len(outputs) - 1)
@@ -310,8 +308,7 @@ def run_v2(task: dict) -> None:
         try: v2_fail(task, str(error), logs, "TIMED_OUT" if isinstance(error, TimeoutError) else "RUNNER_FAILED")
         except Exception: pass
     finally:
-        # The control plane accepts bounded accounting values. It is best-effort
-        # because a cancellation can make the lease terminal before this callback.
+        # 控制面只接受有界统计值。此处为尽力上报，因为取消可能使租约先于回调进入终态。
         if not usage_reported:
             try: v2_usage(task, int((time.monotonic() - started) * 1000), output_bytes, exit_code)
             except Exception: pass

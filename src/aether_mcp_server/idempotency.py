@@ -1,10 +1,8 @@
-"""Process-local idempotency for side-effecting MCP tools.
+"""为有副作用的 MCP 工具提供进程内幂等控制。
 
-A retried ``tools/call`` inside the same run (network timeout, LangGraph
-re-invocation) must not repeat a side effect such as submitting a render job.
-The Deep Agent's checkpoint/outbox recovery is the authority across service
-restarts; this store guards against in-run retries so the same action returns
-its original, already-confirmed result instead of creating a duplicate.
+同一运行内重试 ``tools/call``（网络超时、LangGraph 再次调用）时，不能重复提交
+渲染任务等副作用。服务重启后的恢复由 Deep Agent 的检查点和 outbox 负责；本存储
+仅防护运行内重试，使相同行动返回已确认的原始结果而不是创建重复任务。
 """
 
 import hashlib
@@ -17,10 +15,10 @@ MAX_STORED_ACTIONS = 10_000
 
 
 def decode_run_id(delegation_token: str | None) -> str | None:
-    """Extract the runId from an already-verified Java delegation JWT.
+    """从已验证的 Java 委派 JWT 中提取 runId。
 
-    The middleware verified the signature before the tool runs, so reading the
-    payload here does not re-verify and never trusts a user-supplied token.
+    中间件会在工具运行前校验签名，因此此处只读取载荷，不再次验签，也不会信任用户
+    自行传入的令牌。
     """
     if not delegation_token:
         return None
@@ -35,10 +33,9 @@ def decode_run_id(delegation_token: str | None) -> str | None:
 
 
 def derive_idempotency_key(run_id: str, tool_name: str, arguments: dict[str, Any]) -> str:
-    """Deterministic key for one side-effecting action within a run.
+    """为一次运行内的单个副作用操作生成确定性键。
 
-    Two invocations of the same tool with identical arguments in the same run
-    map to the same key, so retries return the original result.
+    同一运行中，工具名和参数相同的两次调用会映射到同一键，因此重试会返回原始结果。
     """
     canonical = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha256(f"{run_id}:{tool_name}:{canonical}".encode("utf-8")).hexdigest()
@@ -52,11 +49,10 @@ def execute_idempotently(
     arguments: dict[str, Any],
     submit: Any,
 ) -> dict[str, Any]:
-    """Run one side-effecting action once per ``(run_id, arguments)``.
+    """对每个 ``(run_id, arguments)`` 组合只执行一次副作用操作。
 
-    ``submit`` is a zero-argument callable that performs the action and returns
-    the result ``dict``.  A retry with the same run id and arguments returns the
-    previously stored result without invoking ``submit`` again.
+    ``submit`` 是执行操作并返回结果 ``dict`` 的无参可调用对象。同一运行 ID 和参数的
+    重试会直接返回已存储结果，不会再次调用 ``submit``。
     """
     action_key: str | None = None
     if run_id:
@@ -73,7 +69,7 @@ def execute_idempotently(
 
 
 class IdempotencyStore:
-    """Bounded, thread-safe result cache keyed by ``(run_id, action key)``."""
+    """以 ``(run_id, action key)`` 为键的有界线程安全结果缓存。"""
 
     def __init__(self, max_entries: int = MAX_STORED_ACTIONS) -> None:
         self._max_entries = max_entries
@@ -90,6 +86,7 @@ class IdempotencyStore:
         with self._lock:
             self._results[(run_id, key)] = result
             self._results.move_to_end((run_id, key))
+            # 按插入顺序淘汰，限制长期运行进程的内存占用。
             while len(self._results) > self._max_entries:
                 self._results.popitem(last=False)
 

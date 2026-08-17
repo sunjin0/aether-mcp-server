@@ -1,4 +1,4 @@
-"""Managed artifact MCP action.  It forwards a verified delegation token only."""
+"""受控产物 MCP 操作，仅转发已验证的委派令牌。"""
 import json
 import os
 import urllib.error
@@ -31,6 +31,7 @@ def generate_artifact(
         headers={"Content-Type": "application/json", "X-Aether-Delegation": delegation_token},
     )
     try:
+        # 令牌只经内部服务头转发，产物渲染权限仍由管理端统一裁决。
         with urllib.request.urlopen(request, timeout=15) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:

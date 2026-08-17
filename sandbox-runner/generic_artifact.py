@@ -1,7 +1,7 @@
-"""Platform-owned offline renderer for common office artifacts.
+"""平台维护的常用办公产物离线渲染器。
 
-The Agent writes content, not executable code.  This script is frozen in the
-runner image and is the only entrypoint used by generic artifact jobs.
+Agent 只能提供内容，不能提供可执行代码。该脚本冻结在 runner 镜像中，是通用产物
+任务唯一可使用的入口。
 """
 import html
 import json
@@ -23,13 +23,13 @@ def markdown_lines(content: str):
 
 
 def is_duplicate_title_heading(line: str, title: str) -> bool:
-    """Return true only for a leading Markdown H1 that repeats the artifact title."""
+    """仅当首行 Markdown H1 与产物标题重复时返回 True。"""
     heading = re.match(r"^#\s+(.+?)\s*$", line or "")
     return heading is not None and heading.group(1).strip() == (title or "").strip()
 
 
 def strip_duplicate_html_title(content: str, title: str) -> str:
-    """The renderer owns the document H1, so remove an identical leading body H1."""
+    """文档 H1 由渲染器生成，因此移除正文开头重复的 H1。"""
     escaped_title = re.escape(html.escape((title or "").strip()))
     if not escaped_title:
         return content
@@ -50,10 +50,10 @@ def parse_table(lines):
 
 
 def inline_markdown(value: str) -> str:
-    """Render the safe inline Markdown subset accepted by artifact generation."""
+    """渲染产物生成允许的安全行内 Markdown 子集。"""
     text = html.escape(value or "")
-    # Escape first, then only introduce renderer-owned tags. This keeps source
-    # HTML inert while preserving the Markdown formatting users expect in PDFs.
+    # 先转义输入，再仅引入渲染器生成的标签，使原始 HTML 失效但保留 PDF 所需的
+    # Markdown 格式。
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(r"\*\*([^*]+)\*\*|__([^_]+)__", lambda match: "<strong>" + (match.group(1) or match.group(2)) + "</strong>", text)
     text = re.sub(r"~~([^~]+)~~", r"<del>\1</del>", text)
@@ -88,7 +88,7 @@ def sanitize_style(value: str) -> str:
 
 
 class SafeHtml(HTMLParser):
-    """Keep layout-only HTML; discard code, resources and active attributes."""
+    """仅保留布局 HTML，丢弃代码、外部资源和主动属性。"""
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts, self.blocked_depth = [], 0
@@ -240,7 +240,7 @@ def render_pdf(title: str, content: str, output: Path):
 
 
 def render_pdf_html(title: str, content: str, output: Path):
-    """Render agent-provided HTML only after removing active and remote-capable parts."""
+    """移除活动内容和可远程加载部分后，才渲染 Agent 提供的 HTML。"""
     from weasyprint import HTML
     style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}a{color:#2563eb;text-decoration:underline}pre{white-space:pre-wrap;background:#f8fafc;padding:8pt}code{font-family:monospace}"""
     safe_body = strip_duplicate_html_title(sanitize_html(content), title)

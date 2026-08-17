@@ -27,12 +27,11 @@ IDEMPOTENCY_STORE = IdempotencyStore()
 
 
 class DelegatedToolScopeMiddleware:
-    """Validate Java delegation JWT scopes before an MCP tool request is dispatched.
+    """在 MCP 工具请求分发前校验 Java 委派 JWT 的工具权限。
 
-    FastMCP's streamable HTTP session worker runs outside the authentication
-    context, so ``get_access_token()`` is unavailable inside tool functions.
-    Checking the JSON-RPC request at the ASGI boundary keeps the token and its
-    per-tool scope bound to the original HTTP request.
+    FastMCP 的 Streamable HTTP 会话工作线程运行在认证上下文之外，因此工具函数内
+    无法使用 ``get_access_token()``。在 ASGI 边界校验 JSON-RPC 请求，能使令牌及
+    其工具权限始终绑定到原始 HTTP 请求。
     """
 
     def __init__(self, app: Any, verifier: JavaDelegationVerifier) -> None:
@@ -46,8 +45,7 @@ class DelegatedToolScopeMiddleware:
 
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         if not headers.get("content-type", "").lower().startswith("application/json"):
-            # Multipart uploads are authorized by their REST endpoint. Reading
-            # them here would try to parse binary file content as JSON.
+            # multipart 上传由对应 REST 端点授权；在此读取会将二进制文件误解析为 JSON。
             await self.app(scope, receive, send)
             return
 
@@ -79,8 +77,8 @@ class DelegatedToolScopeMiddleware:
                 await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
                 await send({"type": "http.response.body", "body": encoded})
                 return
-            # ContextVars are copied into the FastMCP worker task.  The tool never
-            # receives a user-controlled identity; it only forwards this verified JWT.
+            # ContextVar 会复制到 FastMCP 工作任务。工具不会接收用户可控的身份信息，
+            # 只会转发这里已验证的 JWT。
             token_context = delegated_token.set(raw_token)
 
         delivered = False
@@ -131,9 +129,8 @@ def authorized_process_document(
 def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
                                 document: dict[str, Any] | None = None,
                                 aether_delegation: str | None = None, ctx: Context | None = None) -> object:
-    # Java's synchronous MCP executor passes the token explicitly. Deep Agent
-    # calls use the already verified HTTP Authorization token captured by the
-    # middleware, because the model must never be asked to provide a secret.
+    # Java 的同步 MCP 执行器显式传入令牌。Deep Agent 调用则使用中间件保存的、
+    # 已验证 HTTP Authorization 令牌，避免要求模型提供任何密钥。
     delegation = aether_delegation or delegated_token.get()
     if not delegation:
         raise ValueError("缺少已验证的委派执行令牌")
@@ -291,7 +288,7 @@ def create_server(
 
 
 async def run_http_server(server: FastMCP, verifier: JavaDelegationVerifier | None, host: str, port: int) -> None:
-    """Run the MCP HTTP transport behind the Java-delegated tool-scope gateway."""
+    """在 Java 委派工具权限网关之后运行 MCP HTTP 传输层。"""
     app: Any = server.streamable_http_app()
     if verifier is not None:
         # 必须作为 Uvicorn 的最外层 ASGI 应用运行，不能使用 FastMCP 内部

@@ -70,7 +70,7 @@ def _download_to_temp(source: str) -> Path:
 
 
 def _resolve_admin_file_url(source: str) -> str:
-    """Use the Docker-network admin address for browser-local file URLs."""
+    """将浏览器本机文件 URL 改写为 Docker 网络内的管理端地址。"""
     parsed = urlparse(source)
     admin_url = os.getenv("AETHER_ADMIN_INTERNAL_URL", "").rstrip("/")
     if (
@@ -84,6 +84,7 @@ def _resolve_admin_file_url(source: str) -> str:
     if admin.scheme not in ("http", "https") or not admin.netloc:
         logger.warning("Ignoring invalid AETHER_ADMIN_INTERNAL_URL")
         return source
+    # 仅替换协议和主机，保留原始文件接口路径、查询参数及片段。
     return urlunparse((admin.scheme, admin.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
 
@@ -128,6 +129,7 @@ def process_document(
     source = _resolve_admin_file_url(source)
     logger.info("process_document called: source=%s output_format=%s ocr=%s extract_tables=%s", source, output_format, ocr, extract_tables)
 
+    # Docling 对内网地址先下载到本地，避免转换器在容器网络外重复请求受限地址。
     local_path = _download_to_temp(source) if _is_internal_url(source) else None
     document_source = local_path or source
 
@@ -159,4 +161,5 @@ def process_document(
         return result
     finally:
         if local_path is not None:
+            # 仅清理由本次调用创建的临时文件，调用方传入的本地路径不受影响。
             local_path.unlink(missing_ok=True)

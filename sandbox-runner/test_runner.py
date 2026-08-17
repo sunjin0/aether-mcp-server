@@ -3,8 +3,8 @@ import unittest
 import os
 from unittest.mock import patch
 
-# Runner deliberately rejects a missing production token. Unit tests supply an
-# inert value before importing the module so no host configuration is needed.
+# Runner 会主动拒绝缺少生产令牌的情况。单元测试在导入模块前提供无效占位值，
+# 从而无需依赖宿主机配置。
 os.environ.setdefault("AETHER_SANDBOX_RUNNER_TOKEN", "test-runner-token")
 import runner
 
