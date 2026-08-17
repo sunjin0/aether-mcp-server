@@ -39,6 +39,20 @@ stdio 模式不使用 HTTP Bearer 认证。HTTP 模式未启用 `--auth` 时仅�
 
 当前提供示例工具、资源和提示词，并通过 Docling 支持 PDF、DOCX 等文档的结构化提取。`/api/process-document` 的请求参数与 `process_document` 工具一致，返回 Markdown、结构化数据和元数据。
 
+### 图像 RAG 语义增强
+
+`enhance_image_for_rag`（REST：`POST /api/enhance-image`）可单独增强指定图片。文档处理工具 `process_document` 默认还会在 Docling 发现**文档内嵌图片**后自动调用同一增强流程，并将 RAG 语义块返回在 `image_chunks`；它不会因输入文件本身是一张图片而自动调用。通过 `enhance_images=false` 可关闭自动增强。图片语义块包含页码、来源、置信度和告警，用于图片、流程图和图表的语义检索，不会将视觉估算伪装为精确图表数据。
+
+配置以下环境变量后启用：
+
+```text
+AETHER_VISION_API_BASE_URL=https://your-openai-compatible-endpoint/v1
+AETHER_VISION_MODEL=your-vision-model
+AETHER_VISION_API_KEY=your-secret
+```
+
+未配置时工具返回 `status: "unavailable"` 和原因，OCR/文档处理流程不受影响。认证 HTTP 模式中，Java 签发的委派 JWT 需要包含 `enhance_image_for_rag` 工具权限。
+
 ## Docker
 
 ```powershell

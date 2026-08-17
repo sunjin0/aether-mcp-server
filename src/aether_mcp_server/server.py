@@ -18,6 +18,7 @@ from .auth import JavaDelegationVerifier
 from .prompts import greet
 from .resources import welcome
 from .tools import current_time, echo, process_document
+from .image_enhancement import ImageEnhancementResult, enhance_image
 from .artifact import ArtifactGenerationResult, generate_artifact
 from .idempotency import IdempotencyStore, decode_run_id, execute_idempotently
 
@@ -121,9 +122,19 @@ def authorized_process_document(
     output_format: str = "markdown",
     ocr: bool = False,
     extract_tables: bool = True,
+    enhance_images: bool = True,
     ctx: Context | None = None,
 ) -> object:
-    return process_document(source, output_format, ocr, extract_tables)
+    return process_document(source, output_format, ocr, extract_tables, enhance_images)
+
+
+def authorized_enhance_image(
+    source: str,
+    ocr_text: str | None = None,
+    page: int | None = None,
+    ctx: Context | None = None,
+) -> object:
+    return enhance_image(source, ocr_text, page)
 
 
 def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
@@ -155,6 +166,15 @@ class ProcessDocumentRequest(BaseModel):
     output_format: str = Field(default="markdown", pattern="^(markdown|json|both)$")
     ocr: bool = False
     extract_tables: bool = True
+    enhance_images: bool = True
+
+
+class EnhanceImageRequest(BaseModel):
+    """图像语义增强 REST 接口的请求体。"""
+
+    source: str = Field(description="图片的 URL 地址或服务可访问的本地图片路径。")
+    ocr_text: str | None = Field(default=None, description="同一图片的 OCR 文本，用于提高语义描述准确性。")
+    page: int | None = Field(default=None, ge=1, description="图片在原文档中的页码。")
 
 
 def create_server(
@@ -199,6 +219,11 @@ def create_server(
         title="文档处理",
         description="从 URL 下载文档并使用 Docling 进行格式转换与分析（支持 PDF/DOCX/PPTX 等格式）。",
     )(authorized_process_document)
+    server.tool(
+        name="enhance_image_for_rag",
+        title="图像 RAG 语义增强",
+        description="使用已配置的视觉模型为图片生成可检索的语义块。可附带 OCR 文本；输出不是精确图表数据。",
+    )(authorized_enhance_image)
     server.tool(
         name="generate_artifact",
         title="生成受控文件产物",
@@ -247,6 +272,7 @@ def create_server(
         output_format = form.get("output_format", "markdown")
         ocr = form.get("ocr", "false") in ("true", "True", True)
         extract_tables = form.get("extract_tables", "true") in ("true", "True", True)
+        enhance_images = form.get("enhance_images", "true") in ("true", "True", True)
 
         suffix = Path(file.filename or "file.bin").suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -262,6 +288,7 @@ def create_server(
                     output_format=output_format,
                     ocr=ocr,
                     extract_tables=extract_tables,
+                    enhance_images=enhance_images,
                 )
             )
         except Exception:
@@ -270,6 +297,26 @@ def create_server(
         finally:
             tmp_path.unlink(missing_ok=True)
 
+        return JSONResponse(result.model_dump(mode="json"))
+
+    @server.custom_route("/api/enhance-image", methods=["POST"])
+    async def enhance_image_http(request: Request) -> JSONResponse:
+        """为 RAG 生成独立的图片语义块。"""
+        if token_verifier is not None:
+            unauthorized = await require_request_scope(request, "enhance_image_for_rag", token_verifier)
+            if unauthorized is not None:
+                return unauthorized
+        try:
+            arguments = EnhanceImageRequest.model_validate(await request.json())
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as error:
+            return JSONResponse({"detail": "请求参数无效", "errors": str(error)}, status_code=422)
+        try:
+            result = await anyio.to_thread.run_sync(
+                functools.partial(enhance_image, **arguments.model_dump())
+            )
+        except (RuntimeError, ValueError) as error:
+            logger.info("图片语义增强失败: %s", error)
+            return JSONResponse({"detail": str(error)}, status_code=502)
         return JSONResponse(result.model_dump(mode="json"))
 
     server.resource("example://welcome")(welcome)

@@ -17,6 +17,7 @@ from docling.document_converter import (
 )
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling_core.types.doc import PictureItem
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,10 @@ class DocumentProcessingResult(BaseModel):
     json_data: dict[str, Any] | None = Field(
         default=None,
         description="JSON 格式的文档结构。",
+    )
+    image_chunks: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="文档内嵌图片经视觉模型生成的 RAG 语义块。",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -111,6 +116,49 @@ def _is_internal_url(source: str) -> bool:
     )
 
 
+def _enhance_embedded_images(doc: Any, source: str, ocr_text: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Extract Docling picture items and enrich each one without failing document OCR."""
+    from .image_enhancement import enhance_image
+
+    chunks: list[dict[str, Any]] = []
+    pictures = 0
+    failures = 0
+    unavailable_reason: str | None = None
+    for item, _level in doc.iterate_items():
+        if not isinstance(item, PictureItem):
+            continue
+        pictures += 1
+        image = item.get_image(doc)
+        if image is None:
+            failures += 1
+            continue
+        page = item.prov[0].page_no if item.prov else None
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temporary_image:
+            temporary_image_path = Path(temporary_image.name)
+        try:
+            image.save(temporary_image_path, format="PNG")
+            result = enhance_image(str(temporary_image_path), ocr_text=ocr_text, page=page)
+        except (RuntimeError, ValueError):
+            logger.warning("Embedded image enhancement failed for %s page %s", source, page, exc_info=True)
+            failures += 1
+            continue
+        finally:
+            temporary_image_path.unlink(missing_ok=True)
+        if result.status == "unavailable":
+            unavailable_reason = str(result.metadata.get("reason", "视觉模型未配置"))
+            break
+        for chunk in result.chunks:
+            # The temporary PNG is an implementation detail; RAG citations point to its parent document.
+            chunks.append(chunk.model_copy(update={"source_image": source}).model_dump(mode="json"))
+
+    metadata: dict[str, Any] = {"embedded_images": pictures, "enhanced_images": len(chunks)}
+    if failures:
+        metadata["image_enhancement_failures"] = failures
+    if unavailable_reason:
+        metadata["image_enhancement_unavailable"] = unavailable_reason
+    return chunks, metadata
+
+
 def process_document(
     source: Annotated[str, Field(description="文档的 URL 地址。")],
     output_format: Annotated[
@@ -125,9 +173,13 @@ def process_document(
         bool,
         Field(default=True, description="是否提取表格结构。"),
     ] = True,
+    enhance_images: Annotated[
+        bool,
+        Field(default=True, description="发现文档内嵌图片时，是否调用视觉模型生成 RAG 图片语义块。"),
+    ] = True,
 ) -> DocumentProcessingResult:
     source = _resolve_admin_file_url(source)
-    logger.info("process_document called: source=%s output_format=%s ocr=%s extract_tables=%s", source, output_format, ocr, extract_tables)
+    logger.info("process_document called: source=%s output_format=%s ocr=%s extract_tables=%s enhance_images=%s", source, output_format, ocr, extract_tables, enhance_images)
 
     # Docling 对内网地址先下载到本地，避免转换器在容器网络外重复请求受限地址。
     local_path = _download_to_temp(source) if _is_internal_url(source) else None
@@ -151,11 +203,20 @@ def process_document(
 
         markdown_output = doc.export_to_markdown() if output_format in ("markdown", "both") else None
         json_output = doc.model_dump() if output_format in ("json", "both") else None
+        image_chunks: list[dict[str, Any]] = []
+        metadata = {"pages": len(doc.pages) if doc.pages else 0}
+        if enhance_images:
+            # Use the document's text as OCR context even when callers only request JSON output.
+            image_chunks, enhancement_metadata = _enhance_embedded_images(
+                doc, source, markdown_output or doc.export_to_markdown()
+            )
+            metadata.update(enhancement_metadata)
 
         result = DocumentProcessingResult(
             markdown=markdown_output,
             json_data=json_output,
-            metadata={"pages": len(doc.pages) if doc.pages else 0},
+            image_chunks=image_chunks,
+            metadata=metadata,
         )
         logger.info("process_document returning, markdown_len=%s has_json=%s", len(markdown_output) if markdown_output else 0, json_output is not None)
         return result

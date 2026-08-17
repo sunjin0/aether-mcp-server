@@ -27,6 +27,60 @@ def test_current_time_returns_a_utc_iso_timestamp() -> None:
 
 
 class TestProcessDocument:
+    def test_enhances_embedded_pictures_but_not_the_document_image(self, monkeypatch) -> None:
+        class FakeImage:
+            def save(self, path: str, format: str) -> None:
+                Path(path).write_bytes(b"png")
+
+        class FakePicture:
+            prov = [MagicMock(page_no=2)]
+
+            def get_image(self, _doc: object) -> FakeImage:
+                return FakeImage()
+
+        picture = FakePicture()
+        document = MagicMock()
+        document.pages = [MagicMock(), MagicMock()]
+        document.export_to_markdown.return_value = "# 报告\n图表说明"
+        document.iterate_items.return_value = [(picture, 0)]
+        monkeypatch.setattr("aether_mcp_server.tools.PictureItem", FakePicture)
+        enhanced_chunk = {
+            "chunk_type": "image_description",
+            "text": "销售趋势图",
+            "image_type": "chart",
+            "confidence": 0.9,
+            "page": 2,
+            "source_image": "temporary.png",
+            "ocr_text": "图表说明",
+            "warnings": [],
+        }
+        monkeypatch.setattr(
+            "aether_mcp_server.image_enhancement.enhance_image",
+            lambda *_args, **_kwargs: MagicMock(status="completed", chunks=[MagicMock(
+                model_copy=lambda **_kwargs: MagicMock(model_dump=lambda **_kwargs: enhanced_chunk)
+            )]),
+        )
+        with patch("aether_mcp_server.tools.DocumentConverter") as mock_cls:
+            mock_cls.return_value.convert.return_value.document = document
+            result = process_document(source="report.pdf", ocr=True)
+
+        assert result.image_chunks == [enhanced_chunk]
+        assert result.metadata["embedded_images"] == 1
+        assert result.metadata["enhanced_images"] == 1
+
+    def test_does_not_enhance_when_document_has_no_embedded_pictures(self, monkeypatch) -> None:
+        document = MagicMock()
+        document.pages = [MagicMock()]
+        document.export_to_markdown.return_value = "# 图片 OCR 文本"
+        document.iterate_items.return_value = []
+        with patch("aether_mcp_server.tools.DocumentConverter") as mock_cls:
+            mock_cls.return_value.convert.return_value.document = document
+            result = process_document(source="image.png", ocr=True)
+
+        assert result.image_chunks == []
+        assert result.metadata["embedded_images"] == 0
+        assert result.metadata["enhanced_images"] == 0
+
     def test_configures_image_pipeline(self) -> None:
         with patch("aether_mcp_server.tools.DocumentConverter") as mock_cls:
             mock_cls.return_value.convert.return_value.document.export_to_markdown.return_value = "# Title"
@@ -96,6 +150,7 @@ class TestProcessDocument:
         assert isinstance(result, DocumentProcessingResult)
         assert result.markdown == "# Title\n\nHello world."
         assert result.json_data is None
+        assert result.image_chunks == []
 
     def test_returns_json(self) -> None:
         doc_model = {"content": "Hello", "pages": [{"page": 1}]}
