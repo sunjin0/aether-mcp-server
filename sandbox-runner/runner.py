@@ -325,7 +325,9 @@ def main() -> None:
                 task = claim()
                 if task: run(task)
                 else: time.sleep(POLL_SECONDS)
-        except (urllib.error.URLError, ValueError, KeyError):
+        # Admin can briefly reset active sockets while it is restarted or
+        # redeployed. Keep polling instead of terminating the control plane.
+        except (ConnectionError, TimeoutError, urllib.error.URLError, ValueError, KeyError):
             time.sleep(POLL_SECONDS)
 
 

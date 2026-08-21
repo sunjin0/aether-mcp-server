@@ -16,7 +16,9 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
 # files.pythonhosted.org 在国内下载慢且易超时；切换为清华 PyPI 镜像。
 ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_DEFAULT_TIMEOUT=120
-RUN pip install --no-cache-dir uv
+# The mirror is used for project dependencies, but bootstrap must not make the
+# image build unavailable when that mirror has a transient TLS outage.
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple uv
 
 # Docling 的可选 GPU 依赖较大；默认 30 秒下载超时在受限网络中不足。
 # 文档解析服务不需要 GPU，因此构建时固定 CPU PyTorch 后端。

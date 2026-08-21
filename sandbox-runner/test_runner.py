@@ -22,6 +22,14 @@ class _SuccessfulProcess:
         self.returncode = -9
 
 
+class RunnerPollingTest(unittest.TestCase):
+    def test_main_retries_after_connection_reset(self):
+        with patch.object(runner, "claim_v2", side_effect=ConnectionResetError), \
+             patch.object(runner.time, "sleep", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                runner.main()
+
+
 class RunnerV2UsageTest(unittest.TestCase):
     def v2_task(self, task_id="a"):
         return {

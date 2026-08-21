@@ -1,5 +1,7 @@
 import importlib.util
 from pathlib import Path
+import sys
+from unittest.mock import Mock
 
 
 def load_renderer():
@@ -11,16 +13,25 @@ def load_renderer():
     return module
 
 
-def test_recognizes_only_matching_leading_markdown_h1_as_duplicate_title():
+def test_pdf_markdown_rendering_uses_content_without_an_extra_title(monkeypatch, tmp_path):
     renderer = load_renderer()
+    html_renderer = Mock()
+    monkeypatch.setitem(sys.modules, "weasyprint", type("WeasyPrint", (), {"HTML": html_renderer}))
 
-    assert renderer.is_duplicate_title_heading("# 客户 A 续费风险评估报告", "客户 A 续费风险评估报告")
-    assert not renderer.is_duplicate_title_heading("## 客户 A 续费风险评估报告", "客户 A 续费风险评估报告")
-    assert not renderer.is_duplicate_title_heading("# 风险结论", "客户 A 续费风险评估报告")
+    renderer.render_pdf("# 正文标题\n\n正文内容", tmp_path / "report.pdf")
+
+    rendered_html = html_renderer.call_args.kwargs["string"]
+    assert rendered_html.count("<h1>") == 1
+    assert "<h1>正文标题</h1>" in rendered_html
 
 
-def test_removes_only_identical_leading_html_h1():
+def test_pdf_html_rendering_uses_content_without_an_extra_title(monkeypatch, tmp_path):
     renderer = load_renderer()
+    html_renderer = Mock()
+    monkeypatch.setitem(sys.modules, "weasyprint", type("WeasyPrint", (), {"HTML": html_renderer}))
 
-    assert renderer.strip_duplicate_html_title("<h1>报告</h1><p>正文</p>", "报告") == "<p>正文</p>"
-    assert renderer.strip_duplicate_html_title("<h1>其他标题</h1><p>正文</p>", "报告").startswith("<h1>其他标题</h1>")
+    renderer.render_pdf("<h1>正文标题</h1><p>正文内容</p>", tmp_path / "report.pdf")
+
+    rendered_html = html_renderer.call_args.kwargs["string"]
+    assert rendered_html.count("<h1>") == 1
+    assert "<h1>正文标题</h1>" in rendered_html

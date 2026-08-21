@@ -198,19 +198,16 @@ def render_xlsx(title: str, content: str, document_plan: dict, output: Path):
     workbook.save(output)
 
 
-def render_pdf(title: str, content: str, output: Path):
+def render_pdf(content: str, output: Path):
     from weasyprint import HTML
     if looks_like_html(content):
-        render_pdf_html(title, content, output)
+        render_pdf_html(content, output)
         return
     blocks, lines, index = [], list(markdown_lines(content)), 0
     unordered = re.compile(r"^\s*[-+*]\s+(.+)$")
     ordered = re.compile(r"^\s*(?:\d+[.)]|[一二三四五六七八九十]+、)\s*(.+)$")
     while index < len(lines):
         line = lines[index]
-        if index == 0 and is_duplicate_title_heading(line, title):
-            index += 1
-            continue
         if line.strip().startswith("|"):
             table_lines = []
             while index < len(lines) and lines[index].strip().startswith("|"):
@@ -236,15 +233,15 @@ def render_pdf(title: str, content: str, output: Path):
         elif line.strip(): blocks.append("<p>" + inline_markdown(line) + "</p>")
         index += 1
     style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}strong{font-weight:700}em{font-style:italic}del{color:#6b7280;text-decoration:line-through}code{font-family:monospace;background:#f1f5f9;border-radius:3pt;padding:1pt 3pt;color:#9f1239}a{color:#2563eb;text-decoration:underline}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt;table-layout:auto;page-break-inside:auto}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}"""
-    HTML(string="<meta charset='utf-8'><style>" + style + "</style><h1>" + html.escape(title) + "</h1>" + "".join(blocks)).write_pdf(output)
+    HTML(string="<meta charset='utf-8'><style>" + style + "</style>" + "".join(blocks)).write_pdf(output)
 
 
-def render_pdf_html(title: str, content: str, output: Path):
+def render_pdf_html(content: str, output: Path):
     """移除活动内容和可远程加载部分后，才渲染 Agent 提供的 HTML。"""
     from weasyprint import HTML
     style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}a{color:#2563eb;text-decoration:underline}pre{white-space:pre-wrap;background:#f8fafc;padding:8pt}code{font-family:monospace}"""
-    safe_body = strip_duplicate_html_title(sanitize_html(content), title)
-    HTML(string="<meta charset='utf-8'><style>" + style + "</style><h1>" + html.escape(title) + "</h1>" + safe_body).write_pdf(output)
+    safe_body = sanitize_html(content)
+    HTML(string="<meta charset='utf-8'><style>" + style + "</style>" + safe_body).write_pdf(output)
 
 
 def main():
@@ -257,7 +254,7 @@ def main():
     content = str(payload.get("content") or "")
     if format_name == "docx": render_docx(title, content, target)
     elif format_name == "xlsx": render_xlsx(title, content, payload.get("document") or {}, target)
-    else: render_pdf(title, content, target)
+    else: render_pdf(content, target)
     print("generated=" + target.name)
 
 
