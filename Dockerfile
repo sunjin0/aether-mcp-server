@@ -1,29 +1,29 @@
 # syntax=docker/dockerfile:1.7
 FROM python:3.11-slim
 
-# 系统运行库只依赖基础镜像，置于最前以便业务代码和 Python 依赖变更时复用缓存。
-# OpenCV（由 Docling 表格模型使用）在 slim 镜像中需要这些运行时库。
 # 国内网络下 deb.debian.org 常超时，切换为阿里云 Debian 镜像。
+# ocrmypdf 需要 tesseract-ocr 和中文语言包。
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
     || sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
     apt-get update \
     && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-eng \
+        poppler-utils \
         libgl1 \
         libglib2.0-0 \
-        libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
-# files.pythonhosted.org 在国内下载慢且易超时；切换为清华 PyPI 镜像。
+# 使用清华 PyPI 镜像
 ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    PIP_DEFAULT_TIMEOUT=120
-# The mirror is used for project dependencies, but bootstrap must not make the
-# image build unavailable when that mirror has a transient TLS outage.
-RUN pip install --no-cache-dir --index-url https://pypi.org/simple uv
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
-# Docling 的可选 GPU 依赖较大；默认 30 秒下载超时在受限网络中不足。
-# 文档解析服务不需要 GPU，因此构建时固定 CPU PyTorch 后端。
-ENV UV_HTTP_TIMEOUT=300 \
-    UV_TORCH_BACKEND=cpu
+# 安装 uv
+RUN pip install --no-cache-dir uv
+
+ENV UV_HTTP_TIMEOUT=300
 
 WORKDIR /app
 
@@ -37,9 +37,7 @@ COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-dev --frozen
 
-ENV HF_ENDPOINT=https://huggingface.co \
-    HF_HUB_DISABLE_SYMLINKS_WARNING=1 \
-    PATH="/app/.venv/bin:$PATH" \
+ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000

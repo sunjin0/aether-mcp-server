@@ -4,22 +4,13 @@ version = "0.1.0"
 description = "A demonstration MCP server with stdio and Streamable HTTP transports."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.0.0", "docling[rapidocr]>=2.0.0", "pyjwt>=2.10.0", "torch>=2.0", "torchvision>=0.17"]
+dependencies = ["mcp>=1.0.0", "firecrawl-anydoc>=0.1.0", "ocrmypdf>=16.0.0", "pyjwt>=2.10.0"]
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]
 aether-mcp-server = "aether_mcp_server.__main__:main"
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["hatchling"]

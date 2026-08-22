@@ -11,7 +11,6 @@ from aether_mcp_server.server import (
     delegated_token,
 )
 from aether_mcp_server.tools import DocumentProcessingResult
-from aether_mcp_server.image_enhancement import ImageEnhancementResult
 
 
 DELEGATION_SECRET = "delegation-secret-for-unit-tests-000"
@@ -113,8 +112,6 @@ def test_process_document_rest_endpoint(monkeypatch: pytest.MonkeyPatch) -> None
     assert response.status_code == 200
     assert response.json() == {
         "markdown": "# 文档",
-        "json_data": None,
-        "image_chunks": [],
         "metadata": {"pages": 1},
     }
 
@@ -213,40 +210,8 @@ def test_middleware_passes_multipart_upload_to_authorized_rest_endpoint(
         response = client.post(
             "/api/convert-file",
             files={"file": ("image.png", b"\x89PNG\r\n\x1a\nimage", "image/png")},
-            data={"ocr": "true"},
             headers={"Authorization": "Bearer " + token},
         )
 
     assert response.status_code == 200
     assert response.json()["markdown"] == "# 图片文字"
-
-
-def test_enhance_image_rest_endpoint_requires_its_own_tool_scope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = create_server(JavaDelegationVerifier(DELEGATION_SECRET))
-    monkeypatch.setattr(
-        "aether_mcp_server.server.enhance_image",
-        lambda **_kwargs: ImageEnhancementResult(status="completed"),
-    )
-    token = jwt.encode(
-        {
-            "runId": "run-1", "userId": "user-1", "agentId": "agent-1",
-            "allowedTools": ["enhance_image_for_rag"],
-            "exp": datetime.now(UTC) + timedelta(minutes=1),
-        },
-        DELEGATION_SECRET,
-        algorithm="HS256",
-    )
-
-    with TestClient(server.streamable_http_app()) as client:
-        unauthorized = client.post("/api/enhance-image", json={"source": "https://example.com/chart.png"})
-        authorized = client.post(
-            "/api/enhance-image",
-            json={"source": "https://example.com/chart.png", "page": 2},
-            headers={"Authorization": "Bearer " + token},
-        )
-
-    assert unauthorized.status_code == 401
-    assert authorized.status_code == 200
-    assert authorized.json()["status"] == "completed"
