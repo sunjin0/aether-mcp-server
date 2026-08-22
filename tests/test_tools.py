@@ -7,6 +7,7 @@ import anydoc
 from aether_mcp_server.tools import (
     DocumentProcessingResult,
     _is_internal_url,
+    _ocr_deskew_enabled,
     _needs_ocr,
     _resolve_admin_file_url,
     current_time,
@@ -94,6 +95,7 @@ class TestProcessDocument:
         assert result.metadata["source"] == "test.pdf"
         assert result.metadata["format"] == "markdown"
         assert result.metadata["ocr_applied"] is False
+        assert result.metadata["max_concurrency"] == 1
 
     def test_handles_unsupported_format(self) -> None:
         with (
@@ -117,6 +119,12 @@ class TestProcessDocument:
 
 
 class TestOCR:
+    def test_deskew_is_disabled_unless_explicitly_enabled(self, monkeypatch) -> None:
+        monkeypatch.delenv("AETHER_OCR_DESKEW", raising=False)
+        assert _ocr_deskew_enabled() is False
+        monkeypatch.setenv("AETHER_OCR_DESKEW", "true")
+        assert _ocr_deskew_enabled() is True
+
     def test_needs_ocr_returns_true_for_empty_pdf(self, tmp_path: Path) -> None:
         # 创建一个简单的 PDF（模拟扫描件）
         pdf_path = tmp_path / "scan.pdf"
@@ -137,3 +145,18 @@ class TestOCR:
 
         assert isinstance(result, DocumentProcessingResult)
         assert result.metadata["ocr_applied"] is False  # 非本地文件不触发 OCR
+
+    def test_local_scanned_pdf_runs_ocr_before_conversion(self, tmp_path: Path) -> None:
+        source = tmp_path / "scan.pdf"
+        source.write_bytes(b"PDF")
+        ocr_output = tmp_path / "scan_ocr.pdf"
+        with (
+            patch("aether_mcp_server.tools._needs_ocr", return_value=True),
+            patch("aether_mcp_server.tools._apply_ocr", return_value=ocr_output),
+            patch("aether_mcp_server.tools.anydoc") as mock_anydoc,
+        ):
+            mock_anydoc.to_markdown.return_value = "# OCR Result"
+            result = process_document(source=str(source), ocr=True)
+
+        mock_anydoc.to_markdown.assert_called_once_with(str(ocr_output))
+        assert result.metadata["ocr_applied"] is True

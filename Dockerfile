@@ -23,7 +23,9 @@ ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 # 安装 uv
 RUN pip install --no-cache-dir uv
 
-ENV UV_HTTP_TIMEOUT=300
+ENV UV_HTTP_TIMEOUT=300 \
+    OMP_THREAD_LIMIT=1 \
+    OMP_NUM_THREADS=1
 
 WORKDIR /app
 

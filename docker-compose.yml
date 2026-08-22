@@ -1,6 +1,7 @@
 services:
   aether-mcp:
     build: .
+    cpus: "${AETHER_MCP_CPU_LIMIT:-2.0}"
     # 启用 Java 委派 JWT 认证；未启用时 MCP 工具无法读取或校验工具权限。
     command: ["http", "--auth", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -13,6 +14,11 @@ services:
       - AETHER_VISION_API_BASE_URL=${AETHER_VISION_API_BASE_URL:-}
       - AETHER_VISION_MODEL=${AETHER_VISION_MODEL:-}
       - AETHER_VISION_API_KEY=${AETHER_VISION_API_KEY:-}
+      # 文档转换任务的并发与 OCR 计算开关。默认串行处理，保护同机服务。
+      - AETHER_DOCUMENT_MAX_CONCURRENCY=${AETHER_DOCUMENT_MAX_CONCURRENCY:-1}
+      - AETHER_OCR_DESKEW=${AETHER_OCR_DESKEW:-false}
+      - OMP_THREAD_LIMIT=${OMP_THREAD_LIMIT:-1}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
 

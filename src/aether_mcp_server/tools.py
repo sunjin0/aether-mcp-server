@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import tempfile
+import threading
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,22 @@ import ocrmypdf
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+def _document_max_concurrency() -> int:
+    """读取文档转换并发上限；无效配置降级为单任务执行。"""
+    try:
+        return max(1, int(os.getenv("AETHER_DOCUMENT_MAX_CONCURRENCY", "1")))
+    except ValueError:
+        logger.warning("Invalid AETHER_DOCUMENT_MAX_CONCURRENCY; falling back to 1")
+        return 1
+
+
+DOCUMENT_CONVERSION_SEMAPHORE = threading.BoundedSemaphore(_document_max_concurrency())
+
+
+def _ocr_deskew_enabled() -> bool:
+    return os.getenv("AETHER_OCR_DESKEW", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class EchoResult(BaseModel):
@@ -125,9 +142,8 @@ def _apply_ocr(pdf_path: Path) -> Path:
             str(pdf_path),
             str(output_path),
             language="chi_sim+eng",  # 中文简体 + 英文
-            force_ocr=True,         # 强制 OCR
-            skip_text=False,        # 不跳过已有文本层
-            deskew=True,            # 自动校正倾斜
+            skip_text=True,         # 已有文本层的页面不重复 OCR
+            deskew=_ocr_deskew_enabled(),
         )
         logger.info("OCR completed: %s -> %s", pdf_path, output_path)
         return output_path
@@ -155,31 +171,36 @@ def process_document(
 
     # AnyDoc 对内网地址先下载到本地，避免转换器在容器网络外重复请求受限地址。
     local_path = _download_to_temp(source) if _is_internal_url(source) else None
-    document_source = local_path or source
+    source_path = Path(source)
+    local_document = local_path or (source_path if source_path.is_file() else None)
+    document_source = local_document or source
     ocr_path = None
 
     try:
-        # 如果启用 OCR 且是本地 PDF 文件，先检测是否需要 OCR
-        if ocr and local_path and str(local_path).endswith(".pdf"):
-            if _needs_ocr(local_path):
-                logger.info("Scanned PDF detected, applying OCR...")
-                ocr_path = _apply_ocr(local_path)
-                document_source = ocr_path
+        # AnyDoc 与 OCR 都是 CPU 密集任务。闸门避免多个大文件同时耗尽实例 CPU。
+        with DOCUMENT_CONVERSION_SEMAPHORE:
+            # 如果启用 OCR 且是本地 PDF 文件，先检测是否需要 OCR
+            if ocr and local_document and local_document.suffix.lower() == ".pdf":
+                if _needs_ocr(local_document):
+                    logger.info("Scanned PDF detected, applying OCR...")
+                    ocr_path = _apply_ocr(local_document)
+                    document_source = ocr_path
 
-        # AnyDoc 转换为 Markdown
-        if isinstance(document_source, Path):
-            markdown_output = anydoc.to_markdown(str(document_source))
-        else:
-            markdown_output = anydoc.to_markdown(document_source)
+            # AnyDoc 转换为 Markdown
+            if isinstance(document_source, Path):
+                markdown_output = anydoc.to_markdown(str(document_source))
+            else:
+                markdown_output = anydoc.to_markdown(document_source)
 
-        metadata = {"source": source, "format": "markdown", "ocr_applied": ocr_path is not None}
-
-        result = DocumentProcessingResult(
-            markdown=markdown_output,
-            metadata=metadata,
-        )
-        logger.info("process_document returning, markdown_len=%s", len(markdown_output) if markdown_output else 0)
-        return result
+            metadata = {
+                "source": source,
+                "format": "markdown",
+                "ocr_applied": ocr_path is not None,
+                "max_concurrency": _document_max_concurrency(),
+            }
+            result = DocumentProcessingResult(markdown=markdown_output, metadata=metadata)
+            logger.info("process_document returning, markdown_len=%s", len(markdown_output) if markdown_output else 0)
+            return result
     except UnsupportedError:
         logger.error("Unsupported document format: %s", source)
         return DocumentProcessingResult(

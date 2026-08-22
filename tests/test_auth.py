@@ -189,10 +189,13 @@ def test_middleware_passes_multipart_upload_to_authorized_rest_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = create_server(JavaDelegationVerifier(DELEGATION_SECRET))
-    monkeypatch.setattr(
-        "aether_mcp_server.server.process_document",
-        lambda **_kwargs: DocumentProcessingResult(markdown="# 图片文字"),
-    )
+    captured: dict[str, object] = {}
+
+    def fake_process_document(**kwargs: object) -> DocumentProcessingResult:
+        captured.update(kwargs)
+        return DocumentProcessingResult(markdown="# 图片文字")
+
+    monkeypatch.setattr("aether_mcp_server.server.process_document", fake_process_document)
     token = jwt.encode(
         {
             "runId": "run-1", "userId": "user-1", "agentId": "agent-1",
@@ -210,8 +213,10 @@ def test_middleware_passes_multipart_upload_to_authorized_rest_endpoint(
         response = client.post(
             "/api/convert-file",
             files={"file": ("image.png", b"\x89PNG\r\n\x1a\nimage", "image/png")},
+            data={"ocr": "true"},
             headers={"Authorization": "Bearer " + token},
         )
 
     assert response.status_code == 200
     assert response.json()["markdown"] == "# 图片文字"
+    assert captured["ocr"] is True

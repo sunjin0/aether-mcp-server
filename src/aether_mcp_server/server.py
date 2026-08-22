@@ -243,6 +243,7 @@ def create_server(
             return JSONResponse({"detail": "缺少文件"}, status_code=422)
 
         output_format = form.get("output_format", "markdown")
+        ocr = str(form.get("ocr", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
         suffix = Path(file.filename or "file.bin").suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -256,6 +257,7 @@ def create_server(
                     process_document,
                     source=str(tmp_path),
                     output_format=output_format,
+                    ocr=ocr,
                 )
             )
         except Exception:
