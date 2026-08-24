@@ -15,14 +15,16 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from .auth import JavaDelegationVerifier
+from .credentials import CredentialTokenError, decrypt_email_credential
 from .prompts import greet
 from .resources import welcome
-from .tools import current_time, echo, process_document
+from .tools import current_time, echo, process_document, send_email
 from .artifact import ArtifactGenerationResult, generate_artifact
 from .idempotency import IdempotencyStore, decode_run_id, execute_idempotently
 
 logger = logging.getLogger(__name__)
 delegated_token: ContextVar[str | None] = ContextVar("delegated_token", default=None)
+email_credential: ContextVar[dict[str, str] | None] = ContextVar("email_credential", default=None)
 IDEMPOTENCY_STORE = IdempotencyStore()
 
 
@@ -64,6 +66,7 @@ class DelegatedToolScopeMiddleware:
             tool_name = None
 
         token_context = None
+        credential_context = None
         if tool_name:
             scheme, _, raw_token = headers.get("authorization", "").partition(" ")
             access_token = await self.verifier.verify_token(raw_token) if scheme.lower() == "bearer" and raw_token else None
@@ -80,6 +83,24 @@ class DelegatedToolScopeMiddleware:
             # ContextVar 会复制到 FastMCP 工作任务。工具不会接收用户可控的身份信息，
             # 只会转发这里已验证的 JWT。
             token_context = delegated_token.set(raw_token)
+            if tool_name == "send_email":
+                try:
+                    claims = __import__("jwt").decode(raw_token, self.verifier._delegation_secret, algorithms=["HS256"])
+                    raw_credentials = headers.get("x-aether-email-credentials", "")
+                    token_map = json.loads(raw_credentials) if raw_credentials else {}
+                    if not isinstance(token_map, dict) or not token_map:
+                        raise CredentialTokenError("缺少邮件凭据")
+                    # 工具会将 credential_ref 与该上下文再次精确比对。
+                    credential_context = email_credential.set({
+                        key: decrypt_email_credential(value, claims)
+                        for key, value in token_map.items() if isinstance(key, str) and isinstance(value, str)
+                    })
+                except (CredentialTokenError, ValueError, TypeError, json.JSONDecodeError):
+                    response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32604, "message": "邮件临时凭据无效或已过期"}}
+                    encoded = json.dumps(response).encode("utf-8")
+                    await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
+                    await send({"type": "http.response.body", "body": encoded})
+                    return
 
         delivered = False
 
@@ -95,6 +116,8 @@ class DelegatedToolScopeMiddleware:
         finally:
             if token_context is not None:
                 delegated_token.reset(token_context)
+            if credential_context is not None:
+                email_credential.reset(credential_context)
 
 
 async def require_request_scope(request: Request, tool_name: str, verifier: JavaDelegationVerifier) -> JSONResponse | None:
@@ -123,6 +146,17 @@ def authorized_process_document(
     ctx: Context | None = None,
 ) -> object:
     return process_document(source, output_format, ocr)
+
+
+def authorized_send_email(credential_ref: str, smtp_host: str, smtp_port: int, security: str,
+                          to: list[str], subject: str, text_body: str, cc: list[str] | None = None,
+                          bcc: list[str] | None = None, html_body: str | None = None, ctx: Context | None = None) -> object:
+    credentials = email_credential.get() or {}
+    credential = credentials.get(credential_ref)
+    if credential is None or credential.get("credential_ref") != credential_ref:
+        raise ValueError("邮件临时凭据无效或与引用不匹配")
+    return send_email(credential, credential_ref, smtp_host, smtp_port, security, to, subject, text_body,
+                      cc or [], bcc or [], html_body)
 
 
 def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
@@ -197,10 +231,11 @@ def create_server(
         title="文档处理",
         description="从 URL 下载文档并使用 AnyDoc 进行格式转换（支持 PDF/DOCX/PPTX/XLSX 等格式）。",
     )(authorized_process_document)
+    server.tool(name="send_email", title="发送邮件", description="使用调用方本次运行提供的 SMTP 邮箱提交邮件；每次发送均需平台确认。工具返回仅代表 SMTP 已接受提交，不能声明最终投递到收件箱或出现在发件箱。安全约束：html_body 必须为单行字符串，禁止包含 \\n、\\r 或 \\t；即使是合法 HTML 源码中的格式化换行也会被判为 CRLF 注入风险并直接拒绝执行，且不会提供位置或调试信息。")(authorized_send_email)
     server.tool(
         name="generate_artifact",
         title="生成受控文件产物",
-        description="根据已生成的正文或结构化计划，使用平台通用渲染器生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。当前命中的 Skill 只提供内容与格式规范，不选择脚本或模板。",
+        description="根据已生成的正文或结构化计划，使用平台通用渲染器生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。生成 PDF 时，context 中的 content 必须是模型生成的完整 HTML（含 <style>、布局和正文），不可使用 Markdown 或纯文本；平台保留安全布局和 CSS，不替换为固定主题。",
     )(authorized_generate_artifact)
 
     @server.custom_route("/api/process-document", methods=["POST"])

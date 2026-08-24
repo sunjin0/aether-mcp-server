@@ -18,6 +18,7 @@ name = "aether-mcp-server"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "firecrawl-anydoc" },
     { name = "mcp" },
     { name = "ocrmypdf" },
@@ -31,6 +32,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "firecrawl-anydoc", specifier = ">=0.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "ocrmypdf", specifier = ">=16.0.0" },

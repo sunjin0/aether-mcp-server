@@ -3,10 +3,12 @@ import ipaddress
 import os
 import shutil
 import socket
+import smtplib
 import tempfile
 import threading
 import urllib.request
 from datetime import UTC, datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse, urlunparse
@@ -43,6 +45,17 @@ class CurrentTimeResult(BaseModel):
     timestamp: str = Field(description="当前 UTC 时间的 ISO 8601 字符串。")
 
 
+class EmailSendResult(BaseModel):
+    smtp_accepted: bool = Field(description="SMTP 服务是否已接受本次提交；这不代表邮件已进入发件箱或已投递至收件箱。")
+    delivery_status: Literal["accepted_by_smtp", "submission_failed"] = Field(
+        description="仅表示 SMTP 提交结果；最终投递状态未知，需由收件服务商、退信或投递回执确认。"
+    )
+    sender: str = Field(description="脱敏后的发件人邮箱。")
+    recipient_count: int = Field(description="实际投递的收件人数量。")
+    security: str = Field(description="使用的 SMTP 加密方式。")
+    error_code: str | None = Field(default=None, description="安全的失败分类，不包含 SMTP 原始错误。")
+
+
 class DocumentProcessingResult(BaseModel):
     markdown: str | None = Field(
         default=None,
@@ -62,6 +75,67 @@ def echo(
 
 def current_time() -> CurrentTimeResult:
     return CurrentTimeResult(timestamp=datetime.now(UTC).isoformat())
+
+
+def _mask_email(value: str) -> str:
+    local, _, domain = value.partition("@")
+    return (local[:1] + "***" if local else "***") + "@" + domain
+
+
+def _validate_addresses(values: list[str], field_name: str, required: bool = False) -> list[str]:
+    if (required and not values) or any(not isinstance(value, str) or "@" not in value or "\n" in value or "\r" in value for value in values):
+        raise ValueError(f"{field_name} 必须包含有效邮箱地址")
+    return values
+
+
+def send_email(
+    credential: dict[str, str],
+    credential_ref: Annotated[str, Field(min_length=1, description="本次运行的临时邮件凭据引用。")],
+    smtp_host: Annotated[str, Field(min_length=1, description="调用方 SMTP 主机名。")],
+    smtp_port: Annotated[int, Field(ge=1, le=65535, description="调用方 SMTP 端口。")],
+    security: Annotated[Literal["ssl", "starttls"], Field(description="SMTP 加密方式：ssl 或 starttls。")],
+    to: Annotated[list[str], Field(min_length=1, description="收件人邮箱列表。")],
+    subject: Annotated[str, Field(min_length=1, max_length=998, description="邮件主题。")],
+    text_body: Annotated[str, Field(description="纯文本邮件正文。")],
+    cc: Annotated[list[str], Field(default_factory=list, description="抄送邮箱列表。")] = [],
+    bcc: Annotated[list[str], Field(default_factory=list, description="密送邮箱列表。")] = [],
+    html_body: Annotated[str | None, Field(default=None, description="可选 HTML 邮件正文；必须为单行字符串，不得包含 \\n、\\r 或 \\t。即使是合法 HTML 源码中的格式化换行也会被安全策略拒绝。 ")] = None,
+) -> EmailSendResult:
+    """用 Admin 注入的一次性调用方凭据发送邮件；绝不记录授权码。"""
+    del credential_ref  # 仅用于 Admin/MCP 的凭据绑定校验。
+    sender = credential.get("sender_email", "")
+    authorization_code = credential.get("smtp_authorization_code", "")
+    if not sender or not authorization_code or "@" not in sender:
+        raise ValueError("临时邮件凭据无效")
+    if any("\n" in item or "\r" in item for item in (smtp_host, subject, text_body, html_body or "")):
+        raise ValueError("邮件字段不能包含换行注入内容")
+    recipients = _validate_addresses(to, "to", required=True) + _validate_addresses(cc, "cc") + _validate_addresses(bcc, "bcc")
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = ", ".join(to)
+    if cc:
+        message["Cc"] = ", ".join(cc)
+    message["Subject"] = subject
+    message.set_content(text_body)
+    if html_body is not None:
+        message.add_alternative(html_body, subtype="html")
+    try:
+        if security == "ssl":
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as client:
+                client.login(sender, authorization_code)
+                client.send_message(message, from_addr=sender, to_addrs=recipients)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as client:
+                client.ehlo()
+                client.starttls()
+                client.ehlo()
+                client.login(sender, authorization_code)
+                client.send_message(message, from_addr=sender, to_addrs=recipients)
+    except smtplib.SMTPAuthenticationError:
+        return EmailSendResult(smtp_accepted=False, delivery_status="submission_failed", sender=_mask_email(sender), recipient_count=len(recipients), security=security, error_code="authentication_failed")
+    except (TimeoutError, OSError, smtplib.SMTPException):
+        return EmailSendResult(smtp_accepted=False, delivery_status="submission_failed", sender=_mask_email(sender), recipient_count=len(recipients), security=security, error_code="delivery_failed")
+    return EmailSendResult(smtp_accepted=True, delivery_status="accepted_by_smtp", sender=_mask_email(sender), recipient_count=len(recipients), security=security)
 
 
 def _download_to_temp(source: str) -> Path:
