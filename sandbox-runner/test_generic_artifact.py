@@ -23,6 +23,37 @@ class GenericArtifactHtmlTest(unittest.TestCase):
         self.assertNotIn("file://", rendered)
         self.assertNotIn("url(", rendered)
 
+    def test_preserves_model_html_layout_and_safe_css(self):
+        rendered = generic_artifact.sanitize_html(
+            '<style>.resume{display:grid;grid-template-columns:1fr 2fr;gap:12px;color:#123456}'
+            '@page{margin:12mm}</style><main class="resume"><section>内容</section></main>'
+        )
+        self.assertIn('<style>.resume{display:grid;grid-template-columns:1fr 2fr;gap:12px;color:#123456}@page{margin:12mm}</style>', rendered)
+        self.assertIn('<main class="resume"><section>内容</section></main>', rendered)
+
+    def test_preserves_style_from_complete_html_document_head(self):
+        rendered = generic_artifact.sanitize_html(
+            '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'
+            '@page{size:A4;margin:0}@media print{.resume{padding:12mm 14mm}}'
+            '*{box-sizing:border-box}.resume{min-height:297mm}'
+            '</style></head><body><main class="resume">内容</main></body></html>'
+        )
+        self.assertIn('<head><style>@page{size:A4;margin:0}@media print{.resume{padding:12mm 14mm}}*{box-sizing:border-box}.resume{min-height:297mm}</style></head>', rendered)
+        self.assertIn('<main class="resume">内容</main>', rendered)
+
+    def test_infers_resume_pdf_name_from_title_and_intent(self):
+        self.assertEqual(
+            generic_artifact.inferred_pdf_name("孙进", "求职意向：AI应用开发工程师（优先）／后端开发工程师"),
+            "孙进-简历-AI应用开发工程师",
+        )
+
+    def test_decodes_json_escaped_html_before_css_sanitization(self):
+        rendered = generic_artifact.sanitize_html(
+            '<style>\\n.resume { display: flex; color: #1f3a5f; }\\n</style>\\n<div class=\\"resume\\">内容</div>'
+        )
+        self.assertIn('.resume{display:flex;color:#1f3a5f}', rendered)
+        self.assertIn('<div class="resume">内容</div>', rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

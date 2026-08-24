@@ -35,3 +35,48 @@ def test_pdf_html_rendering_uses_content_without_an_extra_title(monkeypatch, tmp
     rendered_html = html_renderer.call_args.kwargs["string"]
     assert rendered_html.count("<h1>") == 1
     assert "<h1>正文标题</h1>" in rendered_html
+
+
+def test_pdf_html_rendering_keeps_model_authored_css(monkeypatch, tmp_path):
+    renderer = load_renderer()
+    html_renderer = Mock()
+    monkeypatch.setitem(sys.modules, "weasyprint", type("WeasyPrint", (), {"HTML": html_renderer}))
+
+    renderer.render_pdf(
+        '<style>.resume{display:flex;gap:12px;color:#0f172a}</style><main class="resume"><p>正文</p></main>',
+        tmp_path / "resume.pdf",
+    )
+
+    rendered_html = html_renderer.call_args.kwargs["string"]
+    assert ".resume{display:flex;gap:12px;color:#0f172a}" in rendered_html
+    assert '<main class="resume"><p>正文</p></main>' in rendered_html
+
+
+def test_pdf_html_rendering_decodes_json_escaped_html(monkeypatch, tmp_path):
+    renderer = load_renderer()
+    html_renderer = Mock()
+    monkeypatch.setitem(sys.modules, "weasyprint", type("WeasyPrint", (), {"HTML": html_renderer}))
+
+    renderer.render_pdf('<style>\\n.resume { color: #1f3a5f; }\\n</style>\\n<div class=\\"resume\\">正文</div>', tmp_path / "resume.pdf")
+
+    rendered_html = html_renderer.call_args.kwargs["string"]
+    assert ".resume{color:#1f3a5f}" in rendered_html
+    assert '<div class="resume">正文</div>' in rendered_html
+
+
+def test_pdf_html_rendering_keeps_head_style_and_print_layout(monkeypatch, tmp_path):
+    renderer = load_renderer()
+    html_renderer = Mock()
+    monkeypatch.setitem(sys.modules, "weasyprint", type("WeasyPrint", (), {"HTML": html_renderer}))
+
+    renderer.render_pdf(
+        '<!DOCTYPE html><html><head><style>@page{size:A4;margin:0}'
+        '@media print{.resume{padding:12mm 14mm}}.resume{min-height:297mm}'
+        '</style></head><body><main class="resume">正文</main></body></html>',
+        tmp_path / "resume.pdf",
+    )
+
+    rendered_html = html_renderer.call_args.kwargs["string"]
+    assert "@page{size:A4;margin:0}" in rendered_html
+    assert "@media print{.resume{padding:12mm 14mm}}" in rendered_html
+    assert ".resume{min-height:297mm}" in rendered_html

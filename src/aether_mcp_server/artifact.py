@@ -16,9 +16,9 @@ class ArtifactGenerationResult(BaseModel):
 
 def generate_artifact(
     title: Annotated[str, Field(description="文档标题。")],
-    content: Annotated[str, Field(description="待生成的完整 Markdown、正文或 HTML 内容。仅当 format=pdf 时，平台会识别 HTML 并在无网络隔离环境中按安全白名单渲染；脚本、外部资源和事件属性会被移除。")],
+    content: Annotated[str, Field(description="待生成的完整正文内容（即上下文 content）。当 format=pdf 时，content 必须是完整 HTML，不可传 Markdown 或纯文本；HTML 应包含模型生成的 <style>、布局和正文，平台仅移除脚本、外部资源和事件属性，并保留安全的样式与结构。")],
     format: Annotated[str, Field(description="输出格式，仅支持 docx、xlsx 或 pdf。")],
-    file_name: Annotated[str | None, Field(description="可选文件名；未提供时由平台根据标题生成。 ")] = None,
+    file_name: Annotated[str | None, Field(description="输出文件名（建议始终提供，含扩展名）；例如“孙进-简历-AI应用开发工程师.pdf”。未提供时平台根据标题与简历求职意向推导。 ")] = None,
     document: Annotated[dict[str, Any] | None, Field(description="可选结构化文档计划，用于表格或多工作表。 ")] = None,
     delegation_token: str | None = None,
 ) -> ArtifactGenerationResult:

@@ -17,6 +17,17 @@ def safe_name(value: str, extension: str) -> str:
     return base if base.lower().endswith("." + extension) else base + "." + extension
 
 
+def inferred_pdf_name(title: str, content: str) -> str:
+    """Use the model title as the base name and enrich resume titles when possible."""
+    plain = html.unescape(re.sub(r"<[^>]+>", " ", content or ""))
+    intent = re.search(r"求职意向\s*[：:]\s*([^\n<]+)", plain)
+    if not intent or "简历" in (title or ""):
+        return title or "generated"
+    role = re.split(r"[／/｜|]", intent.group(1), maxsplit=1)[0]
+    role = re.sub(r"[（(].*?[）)]", "", role).strip(" ：:-")
+    return f"{title}-简历-{role}" if role else title
+
+
 def markdown_lines(content: str):
     for line in content.replace("\r\n", "\n").split("\n"):
         yield line.rstrip()
@@ -68,10 +79,11 @@ def inline_markdown(value: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, text)
 
 
-HTML_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "strong", "b", "em", "i", "u", "s", "del", "br", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "blockquote", "hr", "pre", "code", "a"}
+HTML_TAGS = {"html", "head", "body", "main", "header", "footer", "section", "article", "aside", "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "small", "strong", "b", "em", "i", "u", "s", "del", "br", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "blockquote", "hr", "pre", "code", "a", "style"}
 VOID_HTML_TAGS = {"br", "hr"}
-BLOCKED_HTML_TAGS = {"script", "style", "iframe", "object", "embed", "svg", "math", "form", "input", "button", "video", "audio", "canvas", "head", "title"}
-SAFE_STYLE_PROPERTIES = {"color", "background-color", "font-size", "font-weight", "font-style", "text-align", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "padding", "padding-top", "padding-right", "padding-bottom", "padding-left", "border", "border-collapse", "width", "height", "line-height", "white-space"}
+BLOCKED_HTML_TAGS = {"script", "iframe", "object", "embed", "svg", "math", "form", "input", "button", "video", "audio", "canvas", "title", "img", "link"}
+BLOCKED_VOID_HTML_TAGS = {"img", "link", "input", "embed"}
+SAFE_STYLE_PROPERTIES = {"color", "background", "background-color", "font-family", "font-size", "font-weight", "font-style", "font-variant", "text-align", "text-indent", "text-decoration", "text-transform", "letter-spacing", "word-spacing", "word-break", "overflow", "overflow-x", "overflow-y", "overflow-wrap", "box-sizing", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "padding", "padding-top", "padding-right", "padding-bottom", "padding-left", "border", "border-top", "border-right", "border-bottom", "border-left", "border-radius", "border-collapse", "border-spacing", "box-shadow", "width", "min-width", "max-width", "height", "min-height", "max-height", "line-height", "white-space", "vertical-align", "display", "position", "z-index", "top", "right", "bottom", "left", "content", "flex", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink", "flex-basis", "justify-content", "align-items", "align-content", "gap", "row-gap", "column-gap", "grid-template-columns", "grid-template-rows", "grid-column", "grid-row", "list-style", "list-style-type", "page-break-before", "page-break-after", "page-break-inside", "break-before", "break-after", "break-inside", "opacity", "size", "print-color-adjust", "-webkit-print-color-adjust"}
 
 
 def sanitize_style(value: str) -> str:
@@ -87,16 +99,54 @@ def sanitize_style(value: str) -> str:
     return ";".join(safe)
 
 
+def sanitize_css(value: str) -> str:
+    """Keep safe model CSS, including print-only layout rules, without external loading."""
+    value = re.sub(r"/\*.*?\*/", "", value or "", flags=re.DOTALL)
+    rules, cursor = [], 0
+    while cursor < len(value):
+        opening = value.find("{", cursor)
+        if opening < 0:
+            break
+        selector = value[cursor:opening].strip()
+        depth, closing = 1, opening + 1
+        while closing < len(value) and depth:
+            if value[closing] == "{":
+                depth += 1
+            elif value[closing] == "}":
+                depth -= 1
+            closing += 1
+        if depth:
+            break
+        declarations = value[opening + 1:closing - 1]
+        selector_lower = selector.lower()
+        if any(token in selector_lower for token in ("url(", "expression", "javascript:")):
+            cursor = closing
+            continue
+        if selector_lower == "@page":
+            cleaned = sanitize_style(declarations)
+        elif re.fullmatch(r"@media\s+print", selector_lower):
+            cleaned = sanitize_css(declarations)
+        elif selector.startswith("@"):
+            cleaned = ""
+        else:
+            cleaned = sanitize_style(declarations)
+        if cleaned:
+            rules.append(selector + "{" + cleaned + "}")
+        cursor = closing
+    return "".join(rules)
+
+
 class SafeHtml(HTMLParser):
     """仅保留布局 HTML，丢弃代码、外部资源和主动属性。"""
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.parts, self.blocked_depth = [], 0
+        self.parts, self.blocked_depth, self.style_depth = [], 0, 0
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         if tag in BLOCKED_HTML_TAGS:
-            self.blocked_depth += 1
+            if tag not in BLOCKED_VOID_HTML_TAGS:
+                self.blocked_depth += 1
             return
         if self.blocked_depth or tag not in HTML_TAGS:
             return
@@ -107,10 +157,14 @@ class SafeHtml(HTMLParser):
                 cleaned = sanitize_style(value)
                 if cleaned:
                     allowed.append((name, cleaned))
+            elif name == "class":
+                allowed.append((name, value))
             elif tag == "a" and name == "href" and re.fullmatch(r"https?://[^\s<>]+", value, re.IGNORECASE):
                 allowed.append((name, value))
         rendered = "".join(" %s=\"%s\"" % (name, html.escape(value, quote=True)) for name, value in allowed)
         self.parts.append("<" + tag + rendered + ">")
+        if tag == "style":
+            self.style_depth += 1
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -120,21 +174,32 @@ class SafeHtml(HTMLParser):
         if tag in BLOCKED_HTML_TAGS:
             self.blocked_depth = max(0, self.blocked_depth - 1)
             return
+        if tag == "style":
+            self.style_depth = max(0, self.style_depth - 1)
         if not self.blocked_depth and tag in HTML_TAGS and tag not in VOID_HTML_TAGS:
             self.parts.append("</" + tag + ">")
 
     def handle_data(self, data):
         if not self.blocked_depth:
-            self.parts.append(html.escape(data))
+            self.parts.append(sanitize_css(data) if self.style_depth else html.escape(data))
 
 
 def looks_like_html(content: str) -> bool:
     return bool(re.search(r"<!doctype\s+html|<(?:html|body|h[1-6]|p|div|span|table|ul|ol|blockquote)\b", content or "", re.IGNORECASE))
 
 
+def normalize_html_content(content: str) -> str:
+    """Decode an HTML string that was accidentally JSON-escaped a second time."""
+    value = content or ""
+    if "\\n" not in value and '\\"' not in value and "\\t" not in value:
+        return value
+    return (value.replace("\\r\\n", "\n").replace("\\n", "\n")
+            .replace("\\t", "\t").replace('\\"', '"'))
+
+
 def sanitize_html(content: str) -> str:
     parser = SafeHtml()
-    parser.feed(content or "")
+    parser.feed(normalize_html_content(content))
     parser.close()
     return "".join(parser.parts)
 
@@ -208,6 +273,8 @@ def render_pdf(content: str, output: Path):
     ordered = re.compile(r"^\s*(?:\d+[.)]|[一二三四五六七八九十]+、)\s*(.+)$")
     while index < len(lines):
         line = lines[index]
+        if re.fullmatch(r"\s*(?:---+|\*\*\*+)\s*", line):
+            blocks.append("<hr>"); index += 1; continue
         if line.strip().startswith("|"):
             table_lines = []
             while index < len(lines) and lines[index].strip().startswith("|"):
@@ -232,14 +299,14 @@ def render_pdf(content: str, output: Path):
             level = len(heading.group(1)); blocks.append(f"<h{level}>" + inline_markdown(heading.group(2)) + f"</h{level}>")
         elif line.strip(): blocks.append("<p>" + inline_markdown(line) + "</p>")
         index += 1
-    style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}strong{font-weight:700}em{font-style:italic}del{color:#6b7280;text-decoration:line-through}code{font-family:monospace;background:#f1f5f9;border-radius:3pt;padding:1pt 3pt;color:#9f1239}a{color:#2563eb;text-decoration:underline}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt;table-layout:auto;page-break-inside:auto}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}"""
+    style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}hr{border:0;border-top:1px solid #cbd5e1;margin:12pt 0}strong{font-weight:700}em{font-style:italic}del{color:#6b7280;text-decoration:line-through}code{font-family:monospace;background:#f1f5f9;border-radius:3pt;padding:1pt 3pt;color:#9f1239}a{color:#2563eb;text-decoration:underline}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt;table-layout:auto;page-break-inside:auto}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}"""
     HTML(string="<meta charset='utf-8'><style>" + style + "</style>" + "".join(blocks)).write_pdf(output)
 
 
 def render_pdf_html(content: str, output: Path):
     """移除活动内容和可远程加载部分后，才渲染 Agent 提供的 HTML。"""
     from weasyprint import HTML
-    style = """@page{size:A4;margin:18mm 15mm}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.65}h1{font-size:22pt;margin:0 0 16pt;border-bottom:2px solid #2563eb;padding-bottom:8pt}h2{font-size:16pt;margin:20pt 0 8pt;color:#1e3a8a}h3{font-size:13pt;margin:15pt 0 6pt}p{margin:0 0 7pt}ul,ol{margin:4pt 0 9pt;padding-left:20pt}table{width:100%;border-collapse:collapse;margin:10pt 0 14pt;font-size:8.5pt}thead{display:table-header-group;background:#eaf2ff}tr{page-break-inside:avoid}th,td{border:1px solid #9ca3af;padding:5pt 6pt;vertical-align:top;word-break:break-word}th{font-weight:700;color:#173b75}a{color:#2563eb;text-decoration:underline}pre{white-space:pre-wrap;background:#f8fafc;padding:8pt}code{font-family:monospace}"""
+    style = """@page{size:A4;margin:14mm}html,body{margin:0;padding:0}body{font-family:'Noto Sans CJK SC','Noto Sans',sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.5}*,*:before,*:after{box-sizing:border-box}table{max-width:100%;border-collapse:collapse}img{max-width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}td,th{overflow-wrap:anywhere}"""
     safe_body = sanitize_html(content)
     HTML(string="<meta charset='utf-8'><style>" + style + "</style>" + safe_body).write_pdf(output)
 
@@ -250,7 +317,10 @@ def main():
     if format_name not in {"docx", "xlsx", "pdf"}: raise ValueError("unsupported artifact format")
     title = str(payload.get("title") or "generated")
     output = Path(os.environ["AETHER_OUTPUT_DIR"]); output.mkdir(parents=True, exist_ok=True)
-    target = output / safe_name(str(payload.get("fileName") or title), format_name)
+    requested_name = str(payload.get("fileName") or "")
+    if not requested_name and format_name == "pdf":
+        requested_name = inferred_pdf_name(title, str(payload.get("content") or ""))
+    target = output / safe_name(requested_name or title, format_name)
     content = str(payload.get("content") or "")
     if format_name == "docx": render_docx(title, content, target)
     elif format_name == "xlsx": render_xlsx(title, content, payload.get("document") or {}, target)
