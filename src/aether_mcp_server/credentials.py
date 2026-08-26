@@ -29,6 +29,20 @@ def decrypt_email_credential(token: str, delegation_claims: dict[str, object]) -
     if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] < time():
         raise CredentialTokenError("邮件凭据令牌已过期")
     credential = payload.get("credential")
-    if not isinstance(credential, dict) or not all(isinstance(credential.get(key), str) for key in ("sender_email", "smtp_authorization_code")):
+    if not isinstance(credential, dict) or not all(isinstance(credential.get(key), str) for key in ("sender_email", "smtp_authorization_code", "smtp_host", "smtp_port", "security")):
         raise CredentialTokenError("邮件凭据令牌无效")
-    return {"sender_email": credential["sender_email"], "smtp_authorization_code": credential["smtp_authorization_code"], "credential_ref": str(payload.get("credentialRef", ""))}
+    if credential["security"] not in ("ssl", "starttls"):
+        raise CredentialTokenError("邮件凭据令牌无效")
+    try:
+        smtp_port = int(credential["smtp_port"])
+    except (TypeError, ValueError) as error:
+        raise CredentialTokenError("邮件凭据令牌无效") from error
+    if not 1 <= smtp_port <= 65535:
+        raise CredentialTokenError("邮件凭据令牌无效")
+    return {
+        "sender_email": credential["sender_email"],
+        "smtp_authorization_code": credential["smtp_authorization_code"],
+        "smtp_host": credential["smtp_host"],
+        "smtp_port": str(smtp_port),
+        "security": credential["security"],
+    }

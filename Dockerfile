@@ -20,8 +20,8 @@ ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_DEFAULT_TIMEOUT=120 \
     PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
-# 安装 uv
-RUN pip install --no-cache-dir uv
+# 清华镜像未同步 uv 时回退到官方 PyPI，避免镜像构建被镜像源缺包阻断。
+RUN pip install --no-cache-dir --index-url https://pypi.org/simple uv
 
 ENV UV_HTTP_TIMEOUT=300 \
     OMP_THREAD_LIMIT=1 \

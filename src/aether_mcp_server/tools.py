@@ -90,25 +90,27 @@ def _validate_addresses(values: list[str], field_name: str, required: bool = Fal
 
 def send_email(
     credential: dict[str, str],
-    credential_ref: Annotated[str, Field(min_length=1, description="本次运行的临时邮件凭据引用。")],
-    smtp_host: Annotated[str, Field(min_length=1, description="调用方 SMTP 主机名。")],
-    smtp_port: Annotated[int, Field(ge=1, le=65535, description="调用方 SMTP 端口。")],
-    security: Annotated[Literal["ssl", "starttls"], Field(description="SMTP 加密方式：ssl 或 starttls。")],
     to: Annotated[list[str], Field(min_length=1, description="收件人邮箱列表。")],
     subject: Annotated[str, Field(min_length=1, max_length=998, description="邮件主题。")],
     text_body: Annotated[str, Field(description="纯文本邮件正文。")],
     cc: Annotated[list[str], Field(default_factory=list, description="抄送邮箱列表。")] = [],
     bcc: Annotated[list[str], Field(default_factory=list, description="密送邮箱列表。")] = [],
-    html_body: Annotated[str | None, Field(default=None, description="可选 HTML 邮件正文；必须为单行字符串，不得包含 \\n、\\r 或 \\t。即使是合法 HTML 源码中的格式化换行也会被安全策略拒绝。 ")] = None,
+    html_body: Annotated[str | None, Field(default=None, description="可选 HTML 邮件正文；支持常见换行符（\\n、\\r\\n、\\r）与制表符。")]= None,
 ) -> EmailSendResult:
-    """用 Admin 注入的一次性调用方凭据发送邮件；绝不记录授权码。"""
-    del credential_ref  # 仅用于 Admin/MCP 的凭据绑定校验。
+    """用 Admin 注入的一次性邮箱配置发送邮件；绝不记录授权码或 SMTP 连接信息。"""
     sender = credential.get("sender_email", "")
     authorization_code = credential.get("smtp_authorization_code", "")
-    if not sender or not authorization_code or "@" not in sender:
+    smtp_host = credential.get("smtp_host", "")
+    security = credential.get("security", "")
+    try:
+        smtp_port = int(credential.get("smtp_port", ""))
+    except (TypeError, ValueError):
+        smtp_port = 0
+    if not sender or not authorization_code or not smtp_host or security not in ("ssl", "starttls") or not 1 <= smtp_port <= 65535 or "@" not in sender:
         raise ValueError("临时邮件凭据无效")
-    if any("\n" in item or "\r" in item for item in (smtp_host, subject, text_body, html_body or "")):
-        raise ValueError("邮件字段不能包含换行注入内容")
+    # 正文会由 EmailMessage 编码为 MIME 内容，可安全保留格式化换行；仅邮件头相关字段禁止 CRLF 注入。
+    if any("\n" in item or "\r" in item for item in (smtp_host, subject)):
+        raise ValueError("邮件头字段不能包含换行内容")
     recipients = _validate_addresses(to, "to", required=True) + _validate_addresses(cc, "cc") + _validate_addresses(bcc, "bcc")
     message = EmailMessage()
     message["From"] = sender

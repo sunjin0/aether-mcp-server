@@ -90,11 +90,12 @@ class DelegatedToolScopeMiddleware:
                     token_map = json.loads(raw_credentials) if raw_credentials else {}
                     if not isinstance(token_map, dict) or not token_map:
                         raise CredentialTokenError("缺少邮件凭据")
-                    # 工具会将 credential_ref 与该上下文再次精确比对。
-                    credential_context = email_credential.set({
-                        key: decrypt_email_credential(value, claims)
-                        for key, value in token_map.items() if isinstance(key, str) and isinstance(value, str)
-                    })
+                    decrypted = [decrypt_email_credential(value, claims)
+                                 for key, value in token_map.items() if isinstance(key, str) and isinstance(value, str)]
+                    # 当前用户每次运行只允许使用自己的默认邮箱配置，模型无法选择或替换凭据。
+                    if len(decrypted) != 1:
+                        raise CredentialTokenError("邮件凭据令牌无效")
+                    credential_context = email_credential.set(decrypted[0])
                 except (CredentialTokenError, ValueError, TypeError, json.JSONDecodeError):
                     response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32604, "message": "邮件临时凭据无效或已过期"}}
                     encoded = json.dumps(response).encode("utf-8")
@@ -148,15 +149,12 @@ def authorized_process_document(
     return process_document(source, output_format, ocr)
 
 
-def authorized_send_email(credential_ref: str, smtp_host: str, smtp_port: int, security: str,
-                          to: list[str], subject: str, text_body: str, cc: list[str] | None = None,
+def authorized_send_email(to: list[str], subject: str, text_body: str, cc: list[str] | None = None,
                           bcc: list[str] | None = None, html_body: str | None = None, ctx: Context | None = None) -> object:
-    credentials = email_credential.get() or {}
-    credential = credentials.get(credential_ref)
-    if credential is None or credential.get("credential_ref") != credential_ref:
-        raise ValueError("邮件临时凭据无效或与引用不匹配")
-    return send_email(credential, credential_ref, smtp_host, smtp_port, security, to, subject, text_body,
-                      cc or [], bcc or [], html_body)
+    credential = email_credential.get()
+    if credential is None:
+        raise ValueError("邮件临时凭据无效或已过期")
+    return send_email(credential, to, subject, text_body, cc or [], bcc or [], html_body)
 
 
 def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
@@ -231,7 +229,7 @@ def create_server(
         title="文档处理",
         description="从 URL 下载文档并使用 AnyDoc 进行格式转换（支持 PDF/DOCX/PPTX/XLSX 等格式）。",
     )(authorized_process_document)
-    server.tool(name="send_email", title="发送邮件", description="使用调用方本次运行提供的 SMTP 邮箱提交邮件；每次发送均需平台确认。工具返回仅代表 SMTP 已接受提交，不能声明最终投递到收件箱或出现在发件箱。安全约束：html_body 必须为单行字符串，禁止包含 \\n、\\r 或 \\t；即使是合法 HTML 源码中的格式化换行也会被判为 CRLF 注入风险并直接拒绝执行，且不会提供位置或调试信息。")(authorized_send_email)
+    server.tool(name="send_email", title="发送邮件", description="使用当前 Agent 已启用的 SMTP 邮箱提交邮件；每次发送均需平台确认。工具返回仅代表 SMTP 已接受提交，不能声明最终投递到收件箱或出现在发件箱。text_body 和 html_body 支持常见格式化换行（\\n、\\r\\n、\\r）及制表符；主题、邮箱地址和 SMTP 主机仍禁止换行。")(authorized_send_email)
     server.tool(
         name="generate_artifact",
         title="生成受控文件产物",
