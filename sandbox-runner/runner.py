@@ -171,7 +171,7 @@ def run(task: dict) -> None:
     logs = ""
     image = IMAGES[task["runtime"]]
     try:
-        if cancel_requested(task) or heartbeat(task):
+        if task.get("executionToken") and (cancel_requested(task) or heartbeat(task)):
             return
         for volume in volumes:
             subprocess.run(["docker", "volume", "create", volume], capture_output=True, check=True)
@@ -199,26 +199,16 @@ def run(task: dict) -> None:
         docker = ["docker", "run", "--rm", "--name", container_name, "-i", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "--memory", "512m", "--cpus", "1", "--user", "10001:10001", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-e", "XDG_CACHE_HOME=/tmp/.cache", "-e", "AETHER_INPUT_JSON=" + input_json, "-e", "AETHER_INPUT_FILE=/work/input/input.json", "-e", "AETHER_RESOURCE_DIR=/work/resources", "-e", "AETHER_OUTPUT_DIR=/work/output", "-v", f"{resource_volume}:/work/resources:ro", "-v", f"{input_volume}:/work/input:ro", "-v", f"{output_volume}:/work/output:rw", "-w", "/work", image] + command
         # 冻结输入已通过 AETHER_INPUT_JSON 和只读文件提供，无需保留额外 stdin 管道。
         started = time.monotonic()
-        process = subprocess.Popen(docker, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        deadline = time.monotonic() + float(task["timeoutSeconds"])
-        cancelled = False
-        while process.poll() is None:
-            if time.monotonic() >= deadline:
-                process.kill()
-                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
-                raise RuntimeError("sandbox process timed out")
-            # 控制面是取消操作的唯一裁决方。执行期间持续续租，请求方取消后立即停止
-            # 守护容器。
-            if heartbeat(task):
-                cancelled = True
-                process.kill()
-                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
-                break
-            time.sleep(min(2.0, max(0.1, deadline - time.monotonic())))
-        stdout, stderr = process.communicate()
-        logs = (stdout + "\n" + stderr)[-8192:]
-        if cancelled:
+        if task.get("executionToken") and heartbeat(task):
             return
+        try:
+            process = subprocess.run(docker, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True,
+                                     timeout=float(task["timeoutSeconds"]), check=False)
+        except subprocess.TimeoutExpired as error:
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
+            raise RuntimeError("sandbox process timed out") from error
+        logs = ((process.stdout or "") + "\n" + (process.stderr or ""))[-8192:]
         if process.returncode != 0:
             raise RuntimeError("sandbox process failed")
         output_names = [name for name in volume_command(output_volume, image, "find /work -maxdepth 1 -type f -exec basename {} \\;").stdout.decode().splitlines() if Path(name).name == name]

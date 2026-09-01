@@ -1,5 +1,6 @@
 import logging
 import ipaddress
+import json
 import os
 import shutil
 import socket
@@ -7,6 +8,7 @@ import smtplib
 import tempfile
 import threading
 import urllib.request
+import urllib.parse
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -67,6 +69,91 @@ class DocumentProcessingResult(BaseModel):
     )
 
 
+class PrometheusQueryResult(BaseModel):
+    status: str = Field(description="Prometheus API 返回状态。")
+    data: dict[str, Any] = Field(description="Prometheus 查询结果数据。")
+
+
+class KubernetesListResult(BaseModel):
+    items: list[dict[str, Any]] = Field(description="Kubernetes Pod 摘要列表。")
+    resource_version: str | None = Field(default=None, description="Kubernetes 资源版本。")
+
+
+def kubernetes_get_pods(credential: dict[str, str], namespace: Annotated[str, Field(default="", max_length=253, description="可选 Kubernetes 命名空间。")]= "",
+                        label_selector: Annotated[str, Field(default="", max_length=512, description="可选标签选择器。")]= "") -> KubernetesListResult:
+    """只读列出 Pod；不允许模型指定 API 地址、Token 或任意资源路径。"""
+    endpoint = credential.get("endpoint", "").rstrip("/")
+    token = credential.get("token", "")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not token or any(c in namespace + label_selector for c in "\r\n"):
+        raise ValueError("Kubernetes 连接器凭据或查询参数无效")
+    if namespace and (namespace in {".", ".."} or any(c in namespace for c in "/\\")):
+        raise ValueError("Kubernetes 命名空间无效")
+    path = "/api/v1/pods" if not namespace else "/api/v1/namespaces/" + urllib.parse.quote(namespace, safe="") + "/pods"
+    query = urllib.parse.urlencode({"labelSelector": label_selector}) if label_selector else ""
+    request = urllib.request.Request(endpoint + path + ("?" + query if query else ""),
+                                     headers={"Authorization": "Bearer " + token, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read(2 * 1024 * 1024))
+    except Exception as error:
+        raise ValueError("Kubernetes 查询失败") from error
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise ValueError("Kubernetes 返回结果无效")
+    summaries = []
+    for item in payload["items"]:
+        if isinstance(item, dict):
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            status = item.get("status") if isinstance(item.get("status"), dict) else {}
+            summaries.append({"name": metadata.get("name"), "namespace": metadata.get("namespace"),
+                              "phase": status.get("phase"), "labels": metadata.get("labels", {})})
+    return KubernetesListResult(items=summaries, resource_version=payload.get("metadata", {}).get("resourceVersion")
+                                if isinstance(payload.get("metadata"), dict) else None)
+
+
+def grafana_query(credential: dict[str, str], query: Annotated[str, Field(min_length=1, max_length=4096, description="PromQL 查询表达式。")]) -> PrometheusQueryResult:
+    """通过 Grafana 数据源代理执行只读 PromQL 查询。"""
+    endpoint = credential.get("endpoint", "").rstrip("/")
+    token = credential.get("token", "")
+    datasource_uid = credential.get("datasource_uid", "")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not token or not datasource_uid \
+            or any(char in datasource_uid for char in "\r\n/\\?"):
+        raise ValueError("Grafana 连接器凭据无效")
+    request = urllib.request.Request(
+        endpoint + "/api/datasources/uid/" + urllib.parse.quote(datasource_uid, safe="")
+        + "/resources/api/v1/query?query=" + urllib.parse.quote(query, safe=""),
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read(1024 * 1024))
+    except Exception as error:
+        raise ValueError("Grafana 查询失败") from error
+    if not isinstance(payload, dict) or payload.get("status") != "success" or not isinstance(payload.get("data"), dict):
+        raise ValueError("Grafana 返回结果无效")
+    return PrometheusQueryResult(status="success", data=payload["data"])
+
+
+def prometheus_query(credential: dict[str, str], query: Annotated[str, Field(min_length=1, max_length=4096, description="PromQL 查询表达式。")]) -> PrometheusQueryResult:
+    """使用请求作用域连接器凭据查询 Prometheus，不接受模型提供 endpoint 或 token。"""
+    endpoint = credential.get("endpoint", "").rstrip("/")
+    token = credential.get("token", "")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or "\n" in endpoint or "\r" in endpoint or not token:
+        raise ValueError("Prometheus 连接器凭据无效")
+    request = urllib.request.Request(
+        endpoint + "/api/v1/query?query=" + urllib.parse.quote(query, safe=""),
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read(1024 * 1024))
+    except Exception as error:
+        raise ValueError("Prometheus 查询失败") from error
+    if not isinstance(payload, dict) or payload.get("status") != "success" or not isinstance(payload.get("data"), dict):
+        raise ValueError("Prometheus 返回结果无效")
+    return PrometheusQueryResult(status="success", data=payload["data"])
 def echo(
     message: Annotated[str, Field(description="需要原样返回的文本内容。")],
 ) -> EchoResult:

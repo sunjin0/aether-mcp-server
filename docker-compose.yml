@@ -1,6 +1,8 @@
 services:
   aether-mcp:
     build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
     cpus: "${AETHER_MCP_CPU_LIMIT:-2.0}"
     # 启用 Java 委派 JWT 认证；未启用时 MCP 工具无法读取或校验工具权限。
     command: ["http", "--auth", "--host", "0.0.0.0", "--port", "8000"]
@@ -9,6 +11,10 @@ services:
     environment:
       # 必须与 Java 的 AETHER_MCP_DELEGATION_SECRET 一致。
       - AETHER_MCP_DELEGATION_SECRET=${AETHER_MCP_DELEGATION_SECRET:-aether-mcp-delegation-dev-secret-change-me}
+      - AETHER_OTLP_TRACES_ENABLED=${AETHER_OTLP_TRACES_ENABLED:-false}
+      - AETHER_OTLP_TRACES_URL=${AETHER_OTLP_TRACES_URL:-}
+      - AETHER_OTLP_LOGS_URL=${AETHER_OTLP_LOGS_URL:-}
+      - OTEL_SERVICE_NAME=${AETHER_MCP_OTEL_SERVICE_NAME:-aether-mcp-server}
       # 必须与 Java 的 AETHER_MCP_CREDENTIAL_SECRET 一致，用于解密调用方一次性 SMTP 凭据。
       - AETHER_MCP_CREDENTIAL_SECRET=${AETHER_MCP_CREDENTIAL_SECRET:-aether-mcp-credential-dev-secret-change-me}
       # 浏览器传来的 localhost 文件 URL 在容器内应改为 admin 服务地址。
@@ -21,6 +27,12 @@ services:
       - AETHER_OCR_DESKEW=${AETHER_OCR_DESKEW:-false}
       - OMP_THREAD_LIMIT=${OMP_THREAD_LIMIT:-1}
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
     volumes:
       - huggingface_cache:/root/.cache/huggingface
 

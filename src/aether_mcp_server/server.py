@@ -15,16 +15,19 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from .auth import JavaDelegationVerifier
-from .credentials import CredentialTokenError, decrypt_email_credential
+from .credentials import CredentialTokenError, decrypt_email_credential, decrypt_connector_credential
 from .prompts import greet
 from .resources import welcome
-from .tools import current_time, echo, process_document, send_email
+from .tools import current_time, echo, process_document, send_email, prometheus_query, grafana_query, kubernetes_get_pods
 from .artifact import ArtifactGenerationResult, generate_artifact
 from .idempotency import IdempotencyStore, decode_run_id, execute_idempotently
+from .telemetry import OTelMiddleware, configure_tracing, shutdown_tracing
 
 logger = logging.getLogger(__name__)
 delegated_token: ContextVar[str | None] = ContextVar("delegated_token", default=None)
 email_credential: ContextVar[dict[str, str] | None] = ContextVar("email_credential", default=None)
+connector_credential: ContextVar[dict[str, object] | None] = ContextVar("connector_credential", default=None)
+trace_parent: ContextVar[str | None] = ContextVar("trace_parent", default=None)
 IDEMPOTENCY_STORE = IdempotencyStore()
 
 
@@ -67,6 +70,11 @@ class DelegatedToolScopeMiddleware:
 
         token_context = None
         credential_context = None
+        connector_context = None
+        trace_context = None
+        incoming_trace = headers.get("traceparent", "")
+        if incoming_trace and __import__("re").fullmatch(r"00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f]", incoming_trace):
+            trace_context = trace_parent.set(incoming_trace)
         if tool_name:
             scheme, _, raw_token = headers.get("authorization", "").partition(" ")
             access_token = await self.verifier.verify_token(raw_token) if scheme.lower() == "bearer" and raw_token else None
@@ -83,6 +91,22 @@ class DelegatedToolScopeMiddleware:
             # ContextVar 会复制到 FastMCP 工作任务。工具不会接收用户可控的身份信息，
             # 只会转发这里已验证的 JWT。
             token_context = delegated_token.set(raw_token)
+            connector_token = headers.get("x-aether-connector-credential", "")
+            if connector_token:
+                try:
+                    claims = __import__("jwt").decode(raw_token, self.verifier._delegation_secret, algorithms=["HS256"])
+                    connector_context = connector_credential.set(
+                        decrypt_connector_credential(connector_token, claims, tool_name)
+                    )
+                except (CredentialTokenError, ValueError, TypeError, json.JSONDecodeError):
+                    if token_context is not None:
+                        delegated_token.reset(token_context)
+                        token_context = None
+                    response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32604, "message": "连接器临时凭据无效或已过期"}}
+                    encoded = json.dumps(response).encode("utf-8")
+                    await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
+                    await send({"type": "http.response.body", "body": encoded})
+                    return
             if tool_name == "send_email":
                 try:
                     claims = __import__("jwt").decode(raw_token, self.verifier._delegation_secret, algorithms=["HS256"])
@@ -97,6 +121,9 @@ class DelegatedToolScopeMiddleware:
                         raise CredentialTokenError("邮件凭据令牌无效")
                     credential_context = email_credential.set(decrypted[0])
                 except (CredentialTokenError, ValueError, TypeError, json.JSONDecodeError):
+                    if token_context is not None:
+                        delegated_token.reset(token_context)
+                        token_context = None
                     response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32604, "message": "邮件临时凭据无效或已过期"}}
                     encoded = json.dumps(response).encode("utf-8")
                     await send({"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(encoded)).encode())]})
@@ -119,6 +146,10 @@ class DelegatedToolScopeMiddleware:
                 delegated_token.reset(token_context)
             if credential_context is not None:
                 email_credential.reset(credential_context)
+            if connector_context is not None:
+                connector_credential.reset(connector_context)
+            if trace_context is not None:
+                trace_parent.reset(trace_context)
 
 
 async def require_request_scope(request: Request, tool_name: str, verifier: JavaDelegationVerifier) -> JSONResponse | None:
@@ -157,6 +188,27 @@ def authorized_send_email(to: list[str], subject: str, text_body: str, cc: list[
     return send_email(credential, to, subject, text_body, cc or [], bcc or [], html_body)
 
 
+def authorized_prometheus_query(query: str, ctx: Context | None = None) -> object:
+    scoped = connector_credential.get()
+    if not scoped or not isinstance(scoped.get("credential"), dict):
+        raise ValueError("Prometheus 临时凭据无效或已过期")
+    return prometheus_query(scoped["credential"], query)
+
+
+def authorized_grafana_query(query: str, ctx: Context | None = None) -> object:
+    scoped = connector_credential.get()
+    if not scoped or not isinstance(scoped.get("credential"), dict):
+        raise ValueError("Grafana 临时凭据无效或已过期")
+    return grafana_query(scoped["credential"], query)
+
+
+def authorized_kubernetes_get_pods(namespace: str = "", label_selector: str = "", ctx: Context | None = None) -> object:
+    scoped = connector_credential.get()
+    if not scoped or not isinstance(scoped.get("credential"), dict):
+        raise ValueError("Kubernetes 临时凭据无效或已过期")
+    return kubernetes_get_pods(scoped["credential"], namespace, label_selector)
+
+
 def authorized_generate_artifact(title: str, content: str, format: str, file_name: str | None = None,
                                 document: dict[str, Any] | None = None,
                                 aether_delegation: str | None = None, ctx: Context | None = None) -> object:
@@ -170,12 +222,15 @@ def authorized_generate_artifact(title: str, content: str, format: str, file_nam
     run_id = decode_run_id(delegation)
     arguments = {"title": title, "content": content, "format": format,
                  "file_name": file_name, "document": document}
-    result = execute_idempotently(
-        IDEMPOTENCY_STORE, run_id, "generate_artifact", arguments,
-        lambda: generate_artifact(title, content, format, file_name, document, delegation).model_dump(),
-    )
+    def submit_artifact() -> dict[str, Any]:
+        generated = generate_artifact(title, content, format, file_name, document, delegation)
+        return generated.model_dump() if hasattr(generated, "model_dump") else generated
+
+    result = execute_idempotently(IDEMPOTENCY_STORE, run_id, "generate_artifact", arguments, submit_artifact)
     if run_id and result.get("run_id"):
         logger.info("generate_artifact idempotent action: runId=%s executionId=%s", run_id, result.get("execution_id"))
+    if "execution_id" not in result or "run_id" not in result:
+        return result
     return ArtifactGenerationResult(**result)
 
 
@@ -231,6 +286,21 @@ def create_server(
     )(authorized_process_document)
     server.tool(name="send_email", title="发送邮件", description="使用当前 Agent 已启用的 SMTP 邮箱提交邮件；每次发送均需平台确认。工具返回仅代表 SMTP 已接受提交，不能声明最终投递到收件箱或出现在发件箱。text_body 和 html_body 支持常见格式化换行（\\n、\\r\\n、\\r）及制表符；主题、邮箱地址和 SMTP 主机仍禁止换行。")(authorized_send_email)
     server.tool(
+        name="prometheus_query",
+        title="Prometheus 查询",
+        description="使用平台委派的 Prometheus 连接器凭据执行只读 PromQL 查询。",
+    )(authorized_prometheus_query)
+    server.tool(
+        name="grafana_query",
+        title="Grafana 查询",
+        description="使用平台委派的 Grafana 连接器凭据执行只读 PromQL 查询。",
+    )(authorized_grafana_query)
+    server.tool(
+        name="kubernetes_get_pods",
+        title="Kubernetes Pod 查询",
+        description="使用平台委派的 Kubernetes 连接器凭据只读查询 Pod 摘要，不执行写入或远程命令。",
+    )(authorized_kubernetes_get_pods)
+    server.tool(
         name="generate_artifact",
         title="生成受控文件产物",
         description="根据已生成的正文或结构化计划，使用平台通用渲染器生成经沙箱校验的 PDF、DOCX 或 XLSX 文件。生成 PDF 时，context 中的 content 必须是模型生成的完整 HTML（含 <style>、布局和正文），不可使用 Markdown 或纯文本；平台保留安全布局和 CSS，不替换为固定主题。",
@@ -260,7 +330,7 @@ def create_server(
             logger.exception("URL 文档处理失败")
             return JSONResponse({"detail": "文档处理失败"}, status_code=500)
 
-        return JSONResponse(result.model_dump(mode="json"))
+        return JSONResponse({"markdown": result.markdown, "metadata": result.metadata})
 
     @server.custom_route("/api/convert-file", methods=["POST"])
     async def convert_file_http(request: Request) -> JSONResponse:
@@ -319,13 +389,18 @@ def create_server(
 async def run_http_server(server: FastMCP, verifier: JavaDelegationVerifier | None, host: str, port: int) -> None:
     """在 Java 委派工具权限网关之后运行 MCP HTTP 传输层。"""
     app: Any = server.streamable_http_app()
+    configure_tracing()
+    app = OTelMiddleware(app)
     if verifier is not None:
         # 必须作为 Uvicorn 的最外层 ASGI 应用运行，不能使用 FastMCP 内部
         # Starlette middleware；后者在当前版本不会包裹 /mcp 传输处理器。
         app = DelegatedToolScopeMiddleware(app, verifier)
-    await uvicorn.Server(
-        uvicorn.Config(app, host=host, port=port, log_level=server.settings.log_level.lower())
-    ).serve()
+    try:
+        await uvicorn.Server(
+            uvicorn.Config(app, host=host, port=port, log_level=server.settings.log_level.lower())
+        ).serve()
+    finally:
+        shutdown_tracing()
 
 
 mcp = create_server()

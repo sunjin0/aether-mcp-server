@@ -35,6 +35,19 @@ Java Admin 为每个 Agent Run 签发 JWT，其中包含 `runId`、`userId`、`a
 
 stdio 模式不使用 HTTP Bearer 认证。HTTP 模式未启用 `--auth` 时仅适合本地调试。
 
+## OpenTelemetry
+
+HTTP tracing 与日志 OTLP 导出默认关闭。对接 Collector 时显式配置：
+
+```powershell
+$env:AETHER_OTLP_TRACES_ENABLED = "true"
+$env:AETHER_OTLP_TRACES_URL = "http://otel-collector:4318/v1/traces"
+$env:AETHER_OTLP_LOGS_URL = "http://otel-collector:4318/v1/logs"
+$env:OTEL_SERVICE_NAME = "aether-mcp-server"
+```
+
+服务会继承入站 `traceparent`，并为 HTTP 请求导出 span；日志通过标准 OTLP Log exporter 导出，不记录凭据或请求体。
+
 ## 工具与文档处理
 
 当前提供示例工具、资源和提示词，并通过 Docling 支持 PDF、DOCX 等文档的结构化提取。`/api/process-document` 的请求参数与 `process_document` 工具一致，返回 Markdown、结构化数据和元数据。
@@ -60,6 +73,16 @@ docker compose up -d --build aether-mcp
 ```
 
 Docker Compose 会持久化 Hugging Face 与 Docling 缓存，避免重复下载模型。完整平台部署请使用 Java 项目的 `docker-compose.all.yml`。
+
+### 本地 Connector 联调
+
+Java 项目本地观测栈启动后，可用以下脚本在 MCP 运行时容器中验证 Prometheus、Grafana 和 Kubernetes 三类只读 Connector：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-local-connectors.ps1
+```
+
+脚本只访问本地测试端点，使用短时 `kubectl proxy`，不会写入 Kubernetes 资源；凭据仅为测试占位值，不得用于生产环境。
 
 ## 受控产物 Sandbox
 
