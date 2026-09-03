@@ -1,20 +1,34 @@
-# Aether MCP Server
+# AGENTS.md
 
-## Workflow
+## Project overview
 
-- Use Python 3.11+ and `uv`; initialize dependencies with `uv sync` and run checks with `uv run pytest -v`.
-- Run a focused test with `uv run pytest tests/<file>.py -v`.
-- The package entry point is `aether-mcp-server`, mapped to `src/aether_mcp_server/__main__.py`.
+Python 3.11+ MCP server supporting stdio and Streamable HTTP transports. MCP is the tool authority for delegated calls; Java Admin signs short-lived JWTs containing `runId`, `userId`, `agentId` and `allowedTools`, and this service validates them when HTTP auth is enabled.
 
-## Runtime Behavior
+## Development and runtime
 
-- `uv run aether-mcp-server` starts the stdio transport. `uv run aether-mcp-server http --host 127.0.0.1 --port 8000` starts Streamable HTTP at `/mcp`.
-- HTTP authentication is opt-in: add `--auth` and configure `AETHER_MCP_DELEGATION_SECRET`. Java is the only authorization authority: it signs short-lived run JWTs containing `runId`, `userId`, `agentId`, and `allowedTools`; Python services only forward them and MCP verifies them. Do not add static token allowlists.
-- Build authenticated HTTP servers through `create_server(...)` in `server.py`; it configures FastMCP `AuthSettings` together with the verifier.
+Use `uv`:
 
-## MCP Metadata
+```powershell
+uv sync
+uv run pytest -q
+uv run aether-mcp-server
+uv run aether-mcp-server http --auth --host 0.0.0.0 --port 8000
+```
 
-- Register MCP primitives in `server.py`; keep the pure implementations in `tools.py`, `resources.py`, and `prompts.py`.
-- Tool wire names are `echo_message` and `get_current_time`, not the internal Python function names `echo` and `current_time`.
-- Preserve explicit tool names, titles, and descriptions plus Pydantic field descriptions. Java clients read parameter and result text from `inputSchema` and `outputSchema`.
-- `echo` and `current_time` return Pydantic models with `message` and `timestamp` fields; do not revert them to bare strings without changing MCP output schemas and tests.
+The HTTP MCP endpoint is `/mcp`; document processing APIs are also exposed by the HTTP server. Docker deployment is `docker compose up -d --build aether-mcp`.
+
+## Authentication and security
+
+Production HTTP mode must use `--auth` and `AETHER_MCP_DELEGATION_SECRET`. Do not add static token allowlists or Secret Provider/Vault/Kubernetes integration. Never log or commit credentials. Preserve Java-signed delegation, expiration and `allowedTools` checks.
+
+## MCP implementation
+
+Register primitives in `server.py`; keep implementations in the dedicated tool/resource/prompt modules. Preserve explicit wire names, titles, descriptions, Pydantic schemas and output models because Java clients consume `inputSchema` and `outputSchema`.
+
+## Configuration scope
+
+Use environment variables for model, document, vision and delegation settings. Observability/OTel configuration has been retired; do not add OTLP exporters, Collector settings or Prometheus/Grafana deployment configuration.
+
+## Verification and commits
+
+Run `uv run pytest -q` and focused tests for changed behavior. Use Conventional Commits: `<type>(<scope>): <中文提交描述>` with types such as `feat`, `fix`, `refactor`, `test`, `build`, `docs`, and `chore`. The commit description must be in Chinese and focused on one change; the commit body must list what was changed, affected tools/protocol/configuration behavior, and verification results. Review `git diff`, and exclude `.env`, caches and generated files.
